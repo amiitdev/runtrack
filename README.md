@@ -652,7 +652,7 @@ cd mobile
 # 1. generate android/ from app.json (permissions, icons, package id)
 npx expo prebuild --platform android --no-install
 
-# 2. build the release APK  (~16 min the first time, ~2 min after)
+# 2. build the release APK   (~16 min cold, ~12 s when only ABI changes)
 cd android
 ./gradlew assembleRelease
 
@@ -660,34 +660,42 @@ cd android
 ls -lh app/build/outputs/apk/release/app-release.apk
 ```
 
-Output:
+Real output:
 
 ```
-BUILD SUCCESSFUL in 15m 52s
-442 actionable tasks: 442 executed
--rw-rw-r-- 88M  .../app-release.apk
+BUILD SUCCESSFUL in 7m 4s          # cold build with MapLibre
+446 actionable tasks: 418 executed, 28 up-to-date
+-rw-rw-r-- 128M  .../app-release.apk
+
+$ ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
+BUILD SUCCESSFUL in 12s            # repackaging only
+-rw-rw-r--  51M  .../app-release.apk
 ```
 
 Verify it with the Android SDK:
 
 ```bash
 AAPT=$(ls -d ~/Android/Sdk/build-tools/*/aapt2 | tail -1)
-$AAPT dump badging dist/RunTrack-1.0.0.apk | head -3
+$AAPT dump badging dist/RunTrack-1.0.2.apk | head -3
 ```
 ```
 package: name='dev.amit.runtrack' versionName='1.0.0'
-uses-permission: name='android.permission.ACCESS_FINE_LOCATION'
-uses-permission: name='android.permission.ACCESS_BACKGROUND_LOCATION'
+application-label:'RunTrack'
+native-code: 'arm64-v8a'
 ```
 
 **Install it:** copy the `.apk` to the phone and open it, or with a USB/adb device:
 
 ```bash
-adb install -r dist/RunTrack-1.0.0.apk
+adb install -r dist/RunTrack-1.0.2.apk
 ```
 
-> 88 MB ships all three CPU slices. For a ~30 MB build:
-> `./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a`
+> **Why 51 MB and not 128 MB?** MapLibre ships native libraries per CPU
+> architecture, and the default ships four — including `x86` / `x86_64`,
+> which only exist on emulators. `android/gradle.properties` now pins
+> `reactNativeArchitectures=arm64-v8a`, which covers every phone since ~2017
+> and more than halves the download. Change that line if you need
+> `armeabi-v7a` too (very old devices).
 
 ### 🗺️ Why MapLibre + OpenFreeMap instead of Google Maps
 
