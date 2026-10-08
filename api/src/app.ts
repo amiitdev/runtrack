@@ -23,6 +23,14 @@ app.use((req, _res, next) => {
   next();
 });
 
+app.get('/', (_req, res) => {
+  res.json({
+    service: 'runtrack-api',
+    docs: 'https://github.com/amiitdev/runtrack#-api-reference',
+    endpoints: ['/health', '/runs', '/stats/dashboard', '/stats/chart', '/stats/records', '/profile'],
+  });
+});
+
 app.get('/health', async (_req, res) => {
   res.json({
     ok: true,

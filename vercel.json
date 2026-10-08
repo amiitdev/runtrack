@@ -4,6 +4,10 @@
   "installCommand": "npm --prefix api install",
   "buildCommand": "npm --prefix api run typecheck",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
-  ]
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "outputDirectory": "public"
 }
