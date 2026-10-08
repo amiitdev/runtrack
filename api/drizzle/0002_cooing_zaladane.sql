@@ -1,0 +1,1 @@
+ALTER TABLE "route_points" ADD COLUMN "segment" integer DEFAULT 0 NOT NULL;

@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "RunTrack",
+    "slug": "runtrack",
+    "version": "1.0.0",
+    "scheme": "runtrack",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.amit.runtrack",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RunTrack uses your location to measure distance, pace and draw your route while you run.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "RunTrack keeps tracking your run if you lock the screen or switch apps.",
+        "UIBackgroundModes": [
+          "location"
+        ]
+      }
+    },
+    "android": {
+      "package": "dev.amit.runtrack",
+      "predictiveBackGestureEnabled": false,
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1120",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "RunTrack uses your location to measure distance, pace and draw your route while you run.",
+          "locationAlwaysAndWhenInUsePermission": "RunTrack keeps tracking your run if you lock the screen or switch apps."
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
