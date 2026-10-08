@@ -8,6 +8,11 @@ import {
   type LiveRouteState,
   type TrackPoint,
 } from '../lib/geo';
+import { classifyActivity, type Activity } from '../lib/activity';
+import {
+  readLivePoints,
+  resetLivePoints,
+} from '../background/locationTask';
 import { api, ApiError } from '../api/client';
 import type { CreateRunPayload, Run } from '../api/types';
 
@@ -24,18 +29,17 @@ export interface Snapshot {
   /** Moving time only — pauses are subtracted. */
   elapsedSeconds: number;
   distanceMeters: number;
-  /** Seconds per kilometer. */
-  paceSecPerKm: number;
-  speedKmh: number;
-  maxSpeedKmh: number;
-  elevationGainMeters: number;
-  /** AVERAGE since start — what the finished run will be scored on. */
+  /** AVERAGE over the whole run — what gets saved. */
   avgSpeedKmh: number;
   avgPaceSecPerKm: number;
-  /** RIGHT NOW, straight from the GPS chip. 0 when you are standing still. */
+  maxSpeedKmh: number;
+  elevationGainMeters: number;
+  /** RIGHT NOW, straight from the GPS chip. 0 when standing still. */
   currentSpeedKmh: number;
   currentPaceSecPerKm: number;
   isMoving: boolean;
+  /** walk / jog / run / sprint — derived from current speed. */
+  activity: Activity;
   points: TrackPoint[];
   coords: { latitude: number; longitude: number; heading: number | null } | null;
 }
@@ -43,15 +47,14 @@ export interface Snapshot {
 const EMPTY: Snapshot = {
   elapsedSeconds: 0,
   distanceMeters: 0,
-  paceSecPerKm: 0,
-  speedKmh: 0,
-  maxSpeedKmh: 0,
-  elevationGainMeters: 0,
   avgSpeedKmh: 0,
   avgPaceSecPerKm: 0,
+  maxSpeedKmh: 0,
+  elevationGainMeters: 0,
   currentSpeedKmh: 0,
   currentPaceSecPerKm: 0,
   isMoving: false,
+  activity: 'still',
   points: [],
   coords: null,
 };
@@ -63,7 +66,8 @@ export interface RunTracker {
   savedRun: Run | null;
   /** True when a finished run is waiting to be uploaded (save failed). */
   canRetry: boolean;
-  /** Increments every GPS fix — handy to prove the stream is alive. */
+  /** False when the OS refused background location — runs may drop on screen-off. */
+  backgroundTracking: boolean;
   fixCount: number;
   start: () => Promise<void>;
   pause: () => void;
@@ -74,21 +78,27 @@ export interface RunTracker {
   reset: () => Promise<void>;
 }
 
+/** One PAUSE → RESUME interval. Used to label stored fixes with a segment. */
+interface SegmentRange {
+  start: number;
+  end: number | null;
+  seg: number;
+}
+
 /**
  * The heart of RunTrack.
  *
- *   GPS watch  ──► routeRef (points + distance)   ─┐
- *                                                  ├─► snapshot ─► UI
- *   clock refs ──► elapsed (now − started − paused)┘
+ * Two independent GPS sources, deliberately writing to different places:
  *
- * Two rules the UI depends on:
+ *   background task ──► AsyncStorage   (survives screen-off / app blur)
+ *   foreground watch ─► routeRef       (instant on-screen feedback)
+ *                              ▲
+ *                              └── polled ~1×/s and merged by timestamp
  *
- *  1. The clock is *derived* from timestamps, never a +1 counter, so a GC
- *     pause or an incoming call cannot make the stopwatch drift:
- *         elapsed = now − startedAt − pausedDuration
+ * The clock is *derived* from timestamps, never a +1 counter:
+ *     elapsed = now − startedAt − pausedDuration
  *
- *  2. Status flips BEFORE any `await`. Pressing STOP must paint "SAVING…"
- *     on the next frame — waiting for the network first feels broken.
+ * Status flips BEFORE any `await` so a tap paints on the next frame.
  */
 export function useRunTracker(): RunTracker {
   const [status, setStatus] = useState<TrackerStatus>('idle');
@@ -96,21 +106,22 @@ export function useRunTracker(): RunTracker {
   const [error, setError] = useState<string | null>(null);
   const [savedRun, setSavedRun] = useState<Run | null>(null);
   const [canRetry, setCanRetry] = useState(false);
+  const [backgroundTracking, setBackgroundTracking] = useState(false);
   const [fixCount, setFixCount] = useState(0);
 
   const routeRef = useRef<LiveRouteState>(emptyRoute());
   const startedAtRef = useRef(0);
   const pausedMsRef = useRef(0);
   const pausedAtRef = useRef<number | null>(null);
-  const segmentRef = useRef(0);
   const statusRef = useRef<TrackerStatus>('idle');
   const watchRef = useRef<Location.LocationSubscription | null>(null);
-  /** Survives a failed upload so the run is never lost. */
-  const pendingRef = useRef<CreateRunPayload | null>(null);
-  /** Chip speed of the newest fix. -1 means "provider gave no speed". */
   const chipSpeedRef = useRef(-1);
-  /** Epoch ms of the newest fix that actually counted towards distance. */
   const lastAcceptedAtRef = useRef(0);
+  const pendingRef = useRef<CreateRunPayload | null>(null);
+  /** Times already folded into routeRef, so a point is never counted twice. */
+  const mergedTimesRef = useRef<Set<number>>(new Set());
+  const rangesRef = useRef<SegmentRange[]>([]);
+  const bgRunningRef = useRef(false);
 
   const setStatusBoth = (s: TrackerStatus) => {
     statusRef.current = s;
@@ -125,55 +136,61 @@ export function useRunTracker(): RunTracker {
     return Math.max(0, (Date.now() - startedAtRef.current - paused) / 1000);
   }, []);
 
-  const sync = useCallback(
-    (coords?: { latitude: number; longitude: number; heading: number | null }) => {
-      const route = routeRef.current;
-      const elapsed = elapsedNow();
-      const km = route.distanceMeters / 1000;
-      const hours = elapsed / 3600;
+  /** Which PAUSE→RESUME interval did this fix fall into? */
+  const segmentForTime = (t: number): number => {
+    const ranges = rangesRef.current;
+    for (const r of ranges) {
+      if (t >= r.start && (r.end == null || t <= r.end)) return r.seg;
+    }
+    return ranges[ranges.length - 1]?.seg ?? 0;
+  };
 
-      // ---- average over the whole run (what gets saved) ----
-      const avgSpeedKmh = km > 0 && hours > 0 ? km / hours : 0;
-      const avgPaceSecPerKm = km > 0 ? elapsed / km : 0;
+  const sync = useCallback(() => {
+    const route = routeRef.current;
+    const elapsed = elapsedNow();
+    const km = route.distanceMeters / 1000;
+    const hours = elapsed / 3600;
 
-      // ---- what is happening THIS second ----
-      // Prefer the chip; fall back to the last step we actually counted.
-      const pts = route.points;
-      let impliedMps = 0;
-      if (pts.length >= 2) {
-        const a = pts[pts.length - 2];
-        const b = pts[pts.length - 1];
-        const dt = (b.time - a.time) / 1000;
-        if (dt > 0) impliedMps = haversineMeters(a, b) / dt;
-      }
+    const avgSpeedKmh = km > 0 && hours > 0 ? km / hours : 0;
+    const avgPaceSecPerKm = km > 0 ? elapsed / km : 0;
 
-      const chip = chipSpeedRef.current;
-      let currentMps = chip > 0 ? chip : impliedMps;
+    const pts = route.points;
+    let impliedMps = 0;
+    if (pts.length >= 2) {
+      const a = pts[pts.length - 2];
+      const b = pts[pts.length - 1];
+      const dt = (b.time - a.time) / 1000;
+      if (dt > 0) impliedMps = haversineMeters(a, b) / dt;
+    }
 
-      // If nothing has counted for 6 s you are not covering ground, even if
-      // the last accepted step said otherwise (that value has gone stale).
-      const fresh = Date.now() - lastAcceptedAtRef.current < 6000;
-      const isMoving = currentMps >= MOVING_MIN_MPS && (chip > 0 || fresh);
-      if (!isMoving) currentMps = 0;
+    const chip = chipSpeedRef.current;
+    const rawMps = chip > 0 ? chip : impliedMps;
+    const fresh = Date.now() - lastAcceptedAtRef.current < 6000;
+    const isMoving = rawMps >= MOVING_MIN_MPS && (chip > 0 || fresh);
+    const currentMps = isMoving ? rawMps : 0;
 
-      setSnapshot((prev) => ({
-        elapsedSeconds: elapsed,
-        distanceMeters: route.distanceMeters,
-        paceSecPerKm: avgPaceSecPerKm,
-        speedKmh: avgSpeedKmh,
-        maxSpeedKmh: route.maxSpeedKmh,
-        elevationGainMeters: route.elevationGainMeters,
-        avgSpeedKmh,
-        avgPaceSecPerKm,
-        currentSpeedKmh: currentMps * 3.6,
-        currentPaceSecPerKm: currentMps > 0 ? 1000 / currentMps : 0,
-        isMoving,
-        points: route.points,
-        coords: coords ?? prev.coords,
-      }));
-    },
-    [elapsedNow],
-  );
+    setSnapshot({
+      elapsedSeconds: elapsed,
+      distanceMeters: route.distanceMeters,
+      avgSpeedKmh,
+      avgPaceSecPerKm,
+      maxSpeedKmh: route.maxSpeedKmh,
+      elevationGainMeters: route.elevationGainMeters,
+      currentSpeedKmh: currentMps * 3.6,
+      currentPaceSecPerKm: currentMps > 0 ? 1000 / currentMps : 0,
+      isMoving,
+      activity: classifyActivity(currentMps),
+      points: route.points,
+      // Keep the last known position so the camera does not jump to null.
+      coords: route.points.length
+        ? {
+            latitude: route.points[route.points.length - 1].lat,
+            longitude: route.points[route.points.length - 1].lon,
+            heading: null,
+          }
+        : null,
+    });
+  }, [elapsedNow]);
 
   /* ---------------- stopwatch ticker ---------------- */
   useEffect(() => {
@@ -182,7 +199,43 @@ export function useRunTracker(): RunTracker {
     return () => clearInterval(id);
   }, [status, sync]);
 
-  /* ---------------- GPS stream ---------------- */
+  /* ---------------- merge the background track ---------------- */
+  useEffect(() => {
+    if (status !== 'running' && status !== 'paused') return;
+
+    let cancelled = false;
+    const mergeOnce = async () => {
+      const stored = await readLivePoints();
+      if (cancelled || stored.length === 0) return;
+
+      const seen = mergedTimesRef.current;
+      let added = false;
+      for (const p of stored) {
+        if (seen.has(p.time)) continue;
+        seen.add(p.time);
+        // The task cannot know the segment, so we stamp it from the clock.
+        routeRef.current = appendPoint(routeRef.current, {
+          ...p,
+          segment: segmentForTime(p.time),
+        });
+        added = true;
+      }
+      if (added) {
+        lastAcceptedAtRef.current = Date.now();
+        setFixCount(seen.size);
+        sync();
+      }
+    };
+
+    void mergeOnce();
+    const id = setInterval(() => void mergeOnce(), 700);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [status, sync]);
+
+  /* ---------------- foreground watch (instant feedback) ---------------- */
   const stopWatch = useCallback(async () => {
     watchRef.current?.remove();
     watchRef.current = null;
@@ -201,33 +254,69 @@ export function useRunTracker(): RunTracker {
         if (statusRef.current !== 'running') return;
 
         const c = loc.coords;
+        const time = loc.timestamp;
+        if (mergedTimesRef.current.has(time)) return;
+        mergedTimesRef.current.add(time);
+
         const before = routeRef.current.points.length;
-        const point: TrackPoint = {
+        routeRef.current = appendPoint(routeRef.current, {
           lat: c.latitude,
           lon: c.longitude,
-          time: loc.timestamp,
+          time,
           altitude: c.altitude ?? null,
           speed: c.speed ?? null,
           accuracy: c.accuracy ?? null,
-          segment: segmentRef.current,
-        };
-        routeRef.current = appendPoint(routeRef.current, point);
-
-        // Remember whether this fix counted, and what the chip said.
-        chipSpeedRef.current = c.speed != null && c.speed > 0 ? c.speed : -1;
-        if (routeRef.current.points.length > before) lastAcceptedAtRef.current = Date.now();
-
-        setFixCount((n) => n + 1);
-        sync({
-          latitude: c.latitude,
-          longitude: c.longitude,
-          heading: c.heading ?? null,
+          segment: segmentForTime(time),
         });
+
+        chipSpeedRef.current = c.speed != null && c.speed > 0 ? c.speed : -1;
+        if (routeRef.current.points.length > before) {
+          lastAcceptedAtRef.current = Date.now();
+        }
+
+        setFixCount(mergedTimesRef.current.size);
+        sync();
       },
     );
   }, [stopWatch, sync]);
 
   useEffect(() => () => void stopWatch(), [stopWatch]);
+
+  /* ---------------- background location ---------------- */
+  const startBackground = useCallback(async () => {
+    try {
+      await Location.startLocationUpdatesAsync('runtrack-bg-location', {
+        accuracy: Location.Accuracy.BestForNavigation,
+        timeInterval: 2000,
+        distanceInterval: 3,
+        deferredUpdatesInterval: 2000,
+        foregroundService: {
+          notificationTitle: 'RunTrack is tracking your run',
+          notificationBody: 'Distance, pace and your route are being recorded.',
+          notificationColor: '#22D3EE',
+          killServiceOnDestroy: false,
+        },
+      });
+      bgRunningRef.current = true;
+      setBackgroundTracking(true);
+      return true;
+    } catch (err) {
+      console.warn('[runtrack] background location unavailable:', err);
+      bgRunningRef.current = false;
+      setBackgroundTracking(false);
+      return false;
+    }
+  }, []);
+
+  const stopBackground = useCallback(async () => {
+    if (!bgRunningRef.current) return;
+    bgRunningRef.current = false;
+    try {
+      await Location.stopLocationUpdatesAsync('runtrack-bg-location');
+    } catch {
+      // Already stopped — nothing to do.
+    }
+  }, []);
 
   /* ---------------- upload ---------------- */
   const persist = useCallback(async () => {
@@ -242,7 +331,6 @@ export function useRunTracker(): RunTracker {
       setSavedRun(res.run);
       setStatusBoth('saved');
     } catch (err) {
-      // pendingRef is kept on purpose → the runner can press RETRY.
       setCanRetry(true);
       setError(err instanceof ApiError ? err.message : `Save failed: ${String(err)}`);
       setStatusBoth('error');
@@ -256,87 +344,118 @@ export function useRunTracker(): RunTracker {
     setCanRetry(false);
     pendingRef.current = null;
 
-    // Cheap check first — avoids the "Requesting…" flash when already granted.
-    let { status: permission } = await Location.getForegroundPermissionsAsync();
-    if (permission !== 'granted') {
+    // Foreground permission is mandatory.
+    let { status: perm } = await Location.getForegroundPermissionsAsync();
+    if (perm !== 'granted') {
       setStatusBoth('requesting');
-      ({ status: permission } = await Location.requestForegroundPermissionsAsync());
+      ({ status: perm } = await Location.requestForegroundPermissionsAsync());
     }
-    if (permission !== 'granted') {
+    if (perm !== 'granted') {
       setError('Location permission is required to track a run.');
       setStatusBoth('error');
       return;
     }
 
+    // Background permission is what keeps the GPS alive once the screen
+    // locks — without it a 20 minute run records about 20 seconds.
+    setBackgroundTracking(false);
+    setStatusBoth('requesting');
+    try {
+      const bg = await Location.getBackgroundPermissionsAsync();
+      if (bg.status !== 'granted') {
+        await Location.requestBackgroundPermissionsAsync();
+      }
+    } catch {
+      // iOS without the background mode, or the dialog was dismissed.
+    }
+
     routeRef.current = emptyRoute();
+    mergedTimesRef.current = new Set();
+    rangesRef.current = [{ start: Date.now(), end: null, seg: 0 }];
     startedAtRef.current = Date.now();
     pausedMsRef.current = 0;
     pausedAtRef.current = null;
-    segmentRef.current = 0;
-    setFixCount(0);
-    setSnapshot(EMPTY);
     chipSpeedRef.current = -1;
     lastAcceptedAtRef.current = Date.now();
+    setFixCount(0);
+    setSnapshot(EMPTY);
 
-    // Flip to running FIRST so the tap paints immediately; the GPS watch
-    // attaches right after without blocking the UI.
+    await resetLivePoints();
+
     setStatusBoth('running');
-    startWatch().catch((err: unknown) => {
-      // A rejected watch must never become an unhandled rejection — that is
-      // a silent crash on Android release builds.
-      setError(
-        `Could not start GPS tracking: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      setStatusBoth('error');
-    });
-  }, [startWatch]);
+    void startWatch();
+    void startBackground();
+  }, [startBackground, startWatch]);
 
   const pause = useCallback(() => {
     if (statusRef.current !== 'running') return;
     pausedAtRef.current = Date.now();
+    // Close the current segment so post-resume fixes are stamped correctly.
+    const ranges = rangesRef.current;
+    const current = ranges[ranges.length - 1];
+    if (current && current.end == null) current.end = pausedAtRef.current;
+    void stopBackground();
     setStatusBoth('paused');
     sync();
-  }, [sync]);
+  }, [stopBackground, sync]);
 
   const resume = useCallback(() => {
     if (statusRef.current !== 'paused') return;
     const at = pausedAtRef.current;
     if (at != null) pausedMsRef.current += Date.now() - at;
     pausedAtRef.current = null;
-    // Everything from here belongs to a new segment, so the distance
-    // covered while paused is never folded into the total.
-    segmentRef.current += 1;
+
+    const ranges = rangesRef.current;
+    const nextSeg = (ranges[ranges.length - 1]?.seg ?? 0) + 1;
+    ranges.push({ start: Date.now(), end: null, seg: nextSeg });
+
     setStatusBoth('running');
+    void startBackground();
     sync();
-  }, [sync]);
+  }, [startBackground, sync]);
 
   const stop = useCallback(async () => {
     const current = statusRef.current;
     if (current !== 'running' && current !== 'paused') return;
 
-    // 1. Freeze the clock NOW — before any await.
+    // 1. Freeze the clock BEFORE any await.
     const durationSeconds = Math.round(elapsedNow());
     if (pausedAtRef.current != null) {
       pausedMsRef.current += Date.now() - pausedAtRef.current;
       pausedAtRef.current = null;
     }
 
+    const ranges = rangesRef.current;
+    const open = ranges[ranges.length - 1];
+    if (open && open.end == null) open.end = Date.now();
+
+    // 2. Paint "SAVING…" immediately, then tear both GPS sources down.
+    setStatusBoth('saving');
+    void stopWatch();
+    await stopBackground();
+
+    // 3. Pull in anything the background task collected that the foreground
+    //    watch never saw (the screen-off stretch).
+    const stored = await readLivePoints();
+    const seen = mergedTimesRef.current;
+    for (const p of stored) {
+      if (seen.has(p.time)) continue;
+      seen.add(p.time);
+      routeRef.current = appendPoint(routeRef.current, {
+        ...p,
+        segment: segmentForTime(p.time),
+      });
+    }
+
     const points = routeRef.current.points;
     const startedAtMs = startedAtRef.current;
 
     if (points.length < 2) {
-      setStatusBoth('saving'); // still paint something
-      await stopWatch();
       setError('Not enough GPS data yet — walk or run a little further.');
       setStatusBoth('error');
       return;
     }
 
-    // 2. Paint "SAVING…" immediately, then tear down GPS.
-    setStatusBoth('saving');
-    void stopWatch();
-
-    // 3. Build the payload up-front so a failed upload can be retried.
     pendingRef.current = {
       startedAt: new Date(startedAtMs).toISOString(),
       endedAt: new Date(startedAtMs + durationSeconds * 1000).toISOString(),
@@ -353,7 +472,7 @@ export function useRunTracker(): RunTracker {
     };
 
     await persist();
-  }, [elapsedNow, persist, stopWatch]);
+  }, [elapsedNow, persist, stopBackground, stopWatch]);
 
   const retrySave = useCallback(() => {
     if (!pendingRef.current || statusRef.current !== 'error') return;
@@ -363,11 +482,14 @@ export function useRunTracker(): RunTracker {
 
   const reset = useCallback(async () => {
     await stopWatch();
+    await stopBackground();
+    await resetLivePoints();
     routeRef.current = emptyRoute();
+    mergedTimesRef.current = new Set();
+    rangesRef.current = [];
     startedAtRef.current = 0;
     pausedMsRef.current = 0;
     pausedAtRef.current = null;
-    segmentRef.current = 0;
     pendingRef.current = null;
     chipSpeedRef.current = -1;
     lastAcceptedAtRef.current = 0;
@@ -375,9 +497,10 @@ export function useRunTracker(): RunTracker {
     setSavedRun(null);
     setCanRetry(false);
     setError(null);
+    setBackgroundTracking(false);
     setSnapshot(EMPTY);
     setStatusBoth('idle');
-  }, [stopWatch]);
+  }, [stopBackground, stopWatch]);
 
   const discardRun = useCallback(async () => {
     pendingRef.current = null;
@@ -391,6 +514,7 @@ export function useRunTracker(): RunTracker {
     error,
     savedRun,
     canRetry,
+    backgroundTracking,
     fixCount,
     start,
     pause,

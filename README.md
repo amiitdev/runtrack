@@ -26,7 +26,7 @@ save → history, charts, streaks and personal records.*
 - [Architecture](#-architecture)
 - [Repository layout](#-repository-layout)
 - [Getting started](#-getting-started)
-- [The five things that make it correct](#-the-five-things-that-make-it-correct)
+- [The six things that make it correct](#-the-six-things-that-make-it-correct)
 - [API reference](#-api-reference)
 - [Testing](#-testing)
 - [Command reference](#-command-reference)
@@ -152,7 +152,7 @@ Only the Live Run screen talks to no one — until you press **STOP**.
 | App shell | **Expo SDK 57** + **Expo Router** | file-based routing, typed routes |
 | Language | **TypeScript** (strict) everywhere | `tsc --noEmit` is green in both projects |
 | Maps | **MapLibre RN** + **OpenFreeMap** | free vector tiles — no API key, no account, no usage cap |
-| Location | **expo-location** | `watchPositionAsync`, `BestForNavigation` |
+| Location | **expo-location** + **expo-task-manager** | foreground *and* background GPS |
 | API | **Express 5** | minimal, no framework lock-in |
 | ORM | **Drizzle ORM** | SQL-first, generates real migrations |
 | Database | **Neon PostgreSQL** | serverless Postgres + `neon-http` (no pool to leak) |
@@ -315,7 +315,7 @@ npm start               # Metro on port 8083, scan the QR with Expo Go
 
 ---
 
-## 🎯 The five things that make it correct
+## 🎯 The six things that make it correct
 
 ### 1 · Haversine distance
 
@@ -379,6 +379,66 @@ Measured against real GPS recorded on a phone lying on a bed:
 `?tz=Asia/Kolkata` → "today" starts at **local** midnight, not UTC. Streaks
 walk backwards in *calendar-day-key* space, never in raw milliseconds, so a DST
 change cannot desync them.
+
+---
+
+### 6 · Background location — the bug that cost 19 minutes
+
+A field test ran **20 minutes in a park** and recorded **0.06 km**. The
+database said exactly why:
+
+```
+run started          13:18
+GPS fixes received   13:18:18 → 13:18:37        ← 19 SECONDS
+points stored        9
+distance             59.3 m                     ← 3.12 m/s = 11.2 km/h ✓
+then                 nothing, for 19 more minutes
+```
+
+The measurements were *correct* — 11.2 km/h is a proper running pace, and the
+5-minute **walk** (93 points, 360 m) worked perfectly. So the filters were
+blameless. The **stream simply stopped**.
+
+`Location.watchPositionAsync` is a **foreground-only** source. The moment the
+screen locks or React Navigation blurs the tab — which is precisely what
+happens when you start running — Android stops delivering fixes. The clock is
+a timestamp, so it kept ticking; the distance came from points that never
+arrived.
+
+```
+          before                                after
+ ┌──────────────────────┐            ┌──────────────────────────┐
+ │ watchPositionAsync   │            │ startLocationUpdatesAsync│
+ │ foreground only      │            │ + TaskManager task       │
+ │ dies on screen-off   │            │ survives screen-off,     │
+ │                      │            │ app blur and unmount     │
+ └──────────┬───────────┘            └──────────┬───────────────┘
+            │                                   │
+            ▼                                   ▼
+        routeRef                      ┌─────────────────────┐
+     (the only store)                 │ AsyncStorage        │
+                                      │ polled ~1×/s, merged│
+                                      └─────────────────────┘
+```
+
+Two sources, **two different stores** — the task owns AsyncStorage, the UI
+owns `routeRef` — so there is no read-modify-write race. Merging is a read,
+deduped by timestamp (and by the < 2 m step filter as a second line of
+defence).
+
+Which segment a merged fix belongs to is decided by the clock:
+
+```
+  ──[ seg 0 ]────✗ PAUSE ✂────[ seg 1 ]────✗ PAUSE ✂────[ seg 2 ]──
+     start          end          start         end          start
+                       ▲                      ▲
+                       └── rangesRef stamps every fix with its segment
+```
+
+**What you must grant:** the app asks for *Allow all the time* on START.
+Without it the run screen shows:
+
+> ⚠ Background location is off — lock the screen and the GPS stops.
 
 ---
 

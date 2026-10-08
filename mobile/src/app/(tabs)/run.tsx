@@ -4,6 +4,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { RouteMap } from '../../components/RouteMap';
+import {
+  ACTIVITY_COLOR,
+  ACTIVITY_LABEL,
+  classifyActivityKmh,
+} from '../../lib/activity';
 import { useRunTracker } from '../../hooks/useRunTracker';
 import { colors, radius, spacing, type } from '../../theme';
 import {
@@ -22,6 +27,7 @@ export default function LiveRun() {
     error,
     savedRun,
     canRetry,
+    backgroundTracking,
     fixCount,
     start,
     pause,
@@ -99,6 +105,22 @@ export default function LiveRun() {
         contentContainerStyle={[styles.scrollBody, { paddingTop: insets.top + spacing.md }]}
       >
         <Text style={styles.kicker}>Run complete 🎉</Text>
+        <View
+          style={[
+            styles.activityChip,
+            styles.activityChipLg,
+            { borderColor: ACTIVITY_COLOR[classifyActivityKmh(savedRun.avgSpeedKmh)] },
+          ]}
+        >
+          <Text
+            style={[
+              styles.activityText,
+              { color: ACTIVITY_COLOR[classifyActivityKmh(savedRun.avgSpeedKmh)] },
+            ]}
+          >
+            {ACTIVITY_LABEL[classifyActivityKmh(savedRun.avgSpeedKmh)]}
+          </Text>
+        </View>
         <Text style={styles.heading}>{formatKm(savedRun.distanceMeters)} km</Text>
 
         <View style={styles.summaryGrid}>
@@ -205,6 +227,21 @@ export default function LiveRun() {
                 ? 'RECORDING'
                 : 'STILL — pace/speed at 0'}
         </Text>
+        <View
+          style={[
+            styles.activityChip,
+            { borderColor: ACTIVITY_COLOR[snapshot.activity] },
+          ]}
+        >
+          <Text
+            style={[
+              styles.activityText,
+              { color: ACTIVITY_COLOR[snapshot.activity] },
+            ]}
+          >
+            {ACTIVITY_LABEL[snapshot.activity]}
+          </Text>
+        </View>
         <Text style={styles.fixText}>{fixCount} fixes</Text>
       </View>
 
@@ -285,6 +322,13 @@ export default function LiveRun() {
           </Text>
         </Pressable>
       </View>
+
+      {!backgroundTracking ? (
+        <Text style={styles.bgWarn}>
+          ⚠ Background location is off — lock the screen and the GPS stops.
+          Grant &quot;Allow all the time&quot; so a long run is recorded in full.
+        </Text>
+      ) : null}
 
       <Text style={styles.footHint} numberOfLines={2}>
         {status === 'saving'
@@ -378,7 +422,38 @@ const styles = StyleSheet.create({
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   legendText: { color: colors.textFaint, fontSize: 13 },
 
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+    flexWrap: 'wrap',
+  },
+  activityChip: {
+    borderWidth: 1.5,
+    borderRadius: radius.pill,
+    paddingHorizontal: 9,
+    paddingVertical: 2,
+  },
+  activityChipLg: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginTop: 6,
+  },
+  activityText: { fontSize: 11, fontWeight: '900', letterSpacing: 1 },
+  bgWarn: {
+    flexShrink: 0,
+    fontSize: 11.5,
+    lineHeight: 17,
+    color: colors.warning,
+    backgroundColor: '#2A2012',
+    borderColor: colors.warning,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    padding: 8,
+    marginTop: spacing.sm,
+  },
   dot: { width: 9, height: 9, borderRadius: 5 },
   statusText: {
     color: colors.textDim,
