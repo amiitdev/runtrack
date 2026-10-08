@@ -29,7 +29,9 @@ save → history, charts, streaks and personal records.*
 - [The five things that make it correct](#-the-five-things-that-make-it-correct)
 - [API reference](#-api-reference)
 - [Testing](#-testing)
-- [Deploying](#-deploying)
+- [Command reference](#-command-reference)
+- [Deploy to Vercel](#-deploy-to-vercel)
+- [Build the APK](#-build-the-apk)
 - [Roadmap — authentication](#-roadmap--authentication)
 - [Roadmap — beyond that](#-roadmap--beyond-that)
 
@@ -443,58 +445,319 @@ $ npx expo export --platform android   → bundles
 
 ---
 
-## 🚢 Deploying
+## 🛠️ Command reference
 
-| Target | How |
+Everything, in the order you actually need it.
+
+### Clone & install
+
+```bash
+git clone https://github.com/amiitdev/runtrack.git
+cd runtrack
+
+npm run install:api       # = npm --prefix server install
+npm run install:mobile    # = npm --prefix mobile install
+```
+
+### Database (Neon)
+
+```bash
+cd server
+
+npm run db:generate       # schema.ts  →  drizzle/*.sql   (after editing schema)
+npm run db:migrate        # apply migrations to Neon — safe to re-run
+npm run db:studio         # open the Drizzle browser UI
+```
+
+### Run everything locally
+
+```bash
+# terminal 1 — API on http://localhost:4000
+npm run api
+
+# terminal 2 — Metro on http://localhost:8083, scan the QR with Expo Go
+npm run mobile
+```
+
+### Quality gates — run these before every push
+
+```bash
+cd server && npm run typecheck          # tsc --noEmit
+cd mobile && npm run typecheck          # tsc --noEmit
+cd mobile && npm run lint               # eslint, 0 warnings allowed
+cd mobile && npm test                   # 4 GPS test suites
+cd mobile && npx expo-doctor            # 21 dependency/config checks
+cd mobile && npx expo export -p android # prove it bundles
+```
+
+### Seed & reset data
+
+```bash
+cd server
+npx tsx scripts/seed.ts                 # 18 demo runs through the real POST /runs
+
+# wipe all history (profile is kept)
+curl -X DELETE https://runtrack-zeta.vercel.app/runs
+```
+
+### Test scripts (`cd server`)
+
+| Script | What it proves |
 |---|---|
-| **GitHub** | `gh repo create amiitdev/runtrack --public --source . --push` |
-| **Vercel (API)** | connect the repo, root directory `api`, production env `DATABASE_URL` |
-| **APK** | `cd mobile && npx expo run:android --variant release` — local Gradle, **no Expo account** |
+| `npx tsx scripts/seg-test.ts` | a 5 km PAUSE gap is not counted |
+| `npx tsx scripts/smoke.ts` | full `POST → GET → DELETE` round trip |
+| `cd mobile && npm run test:scenarios` | stationary → 0 m, running → ±1.6 % |
+| `cd mobile && npm run test:bed` | replays **your real bed GPS** → 0.0 m |
+| `cd mobile && npm run test:walk` | house walk not invented, park laps within 5 % |
+| `cd mobile && npm run test:live` | polyline grows, camera follows, resume works |
 
-### Live
+### Ship a change
 
-| | |
+```bash
+git add -A
+git commit -m "what changed and why"
+git push origin main        # → Vercel rebuilds (if the repo is linked)
+```
+
+---
+
+## 🚢 Deploy to Vercel
+
+Step by step, exactly as it was done here.
+
+### Step 1 — put the code on GitHub
+
+```bash
+gh repo create runtrack --public --source . --remote origin --push
+# → https://github.com/amiitdev/runtrack
+```
+
+Check no secrets travel with it first:
+
+```bash
+git ls-files | grep -E "\.env$"      # must print nothing
+```
+
+### Step 2 — make the repo Vercel-shaped (4 files)
+
+```
+runtrack/
+├── api/                      ← Vercel ONLY looks here for functions
+│   ├── package.json          ← { "type": "module" }
+│   └── index.ts              ← the single function (re-exports the app)
+├── server/                   ← the actual Express + Drizzle + Neon code
+├── public/index.html         ← static output (Vercel demands one)
+├── package.json              ← root scripts + typescript
+└── vercel.json               ← install/build/rewrite config
+```
+
+**`api/index.ts`** — the entire serverless surface:
+
+```ts
+export { default } from '../server/src/app.js';
+```
+
+**`vercel.json`**
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install && npm --prefix server install",
+  "buildCommand": "npm --prefix server run typecheck",
+  "outputDirectory": "public",
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}
+```
+
+**`server/src/server.ts`** stays the local listener; **`server/src/app.ts`**
+exports the Express app so both local and Vercel use the same routes.
+
+### Step 3 — create the project and link the repo
+
+```
+Vercel dashboard → Add New → Project → import github.com/amiitdev/runtrack
+```
+…or from a terminal with the Vercel CLI:
+
+```bash
+vercel login
+vercel link                       # attaches this folder to the project
+vercel --prod                     # deploy to production
+```
+
+### Step 4 — environment variables
+
+Project → **Settings → Environment Variables** → add both, targets
+**Production** + **Preview**:
+
+| Key | Value |
 |---|---|
-| **API** | <https://runtrack-zeta.vercel.app> |
-| **GitHub** | <https://github.com/amiitdev/runtrack> |
-| **Health check** | [`/health`](https://runtrack-zeta.vercel.app/health) |
+| `DATABASE_URL` | your Neon connection string |
+| `CORS_ORIGIN` | `*` |
+
+Then redeploy. Without `DATABASE_URL` the function throws at import time,
+because `server/src/db/client.ts` refuses to start with no connection string.
+
+### Step 5 — verify
 
 ```bash
 $ curl https://runtrack-zeta.vercel.app/health
 {"ok":true,"service":"runtrack-api","uptimeSeconds":26,"runs":0}
+
+$ curl https://runtrack-zeta.vercel.app/stats/dashboard?tz=Asia/Kolkata
+{"today":{"distanceMeters":0,...},"streakDays":0,"totalRuns":0}
 ```
 
-**How the Vercel layout works** — Vercel turns *every* `.ts` file under `/api`
-into its own Lambda, and the Hobby plan caps a deployment at **12 functions**.
-The Express app therefore lives in `/server` and `/api` holds exactly one file:
+A `POST /runs` here writes straight to Neon — same code path as your phone.
+
+### The four walls we hit
+
+Every one of these was a real failure during the first deploy:
+
+| # | Error | What it really meant | Fix |
+|---|---|---|---|
+| 1 | `STATIC_BUILD_NO_OUT_DIR` | no `outputDirectory` was set and no `public/` existed | added `public/index.html` (a proper API landing page) |
+| 2 | `exceeded_serverless_functions_per_deployment` | Vercel makes **one Lambda per `.ts` under `/api`**, we had 16 — **Hobby plan caps at 12** | moved the whole app to `/server`, left **one** file in `/api` |
+| 3 | `ERR_REQUIRE_ESM` | the entry was compiled as CommonJS but the app is ESM | `api/package.json` → `{ "type": "module" }` |
+| 4 | `302 → vercel.com/sso-api` | Vercel Authentication was on by default | project → Settings → Deployment Protection → disable |
+
+> **Rule to remember:** `/api` is not your source folder. It is Vercel's
+> function directory. Source code belongs somewhere else.
 
 ```
-runtrack/
-├── api/
-│   ├── package.json          # { "type": "module" } — without this Vercel
-│   │                         #   compiles the entry as CJS → ERR_REQUIRE_ESM
-│   └── index.ts              # 1 function: export { default } from '../server/src/app.js'
-├── server/                   # Express + Drizzle + Neon (never deployed directly)
-└── public/index.html         # landing page, satisfies outputDirectory
+  /api                     /server
+  ┌──────────────────┐     ┌──────────────────────────┐
+  │ index.ts   1 fn  │ ──► │ app.ts   Express routes   │
+  │ package.json     │     │ db/      Neon + Drizzle   │
+  └──────────────────┘     │ lib/     geo, metrics     │
+         ▲                 └──────────────────────────┘
+         │ only this becomes a Lambda
+         └── 1 function  ✅   (limit is 12)
 ```
 
-> After `git push`, the git-linked Vercel project rebuilds automatically.
-> If you deploy to the env-carrying project instead, trigger it with a new
-> `create_deployment` (MCP) or `vercel deploy` from the CLI.
+---
 
-### Building an APK from the terminal
+## 📱 Build the APK
+
+Two ways. We used **Method A** because it needs no Expo account.
+
+### Method A — local Gradle ✅ used here
+
+Needs: **Java 21** + **Android SDK** (both already on this machine).
 
 ```bash
 cd mobile
-npx expo prebuild --platform android      # generates android/ from app.json
+
+# 1. generate android/ from app.json (permissions, icons, package id)
+npx expo prebuild --platform android --no-install
+
+# 2. build the release APK  (~16 min the first time, ~2 min after)
 cd android
-./gradlew assembleRelease                 # → android/app/build/outputs/apk/release/app-release.apk
+./gradlew assembleRelease
+
+# 3. the artifact
+ls -lh app/build/outputs/apk/release/app-release.apk
 ```
 
-Native permissions (background location, iOS usage strings) are all declared in
-`app.json` — the `android/` folder is generated, never hand-edited.
+Output:
 
----
+```
+BUILD SUCCESSFUL in 15m 52s
+442 actionable tasks: 442 executed
+-rw-rw-r-- 88M  .../app-release.apk
+```
+
+Verify it with the Android SDK:
+
+```bash
+AAPT=$(ls -d ~/Android/Sdk/build-tools/*/aapt2 | tail -1)
+$AAPT dump badging dist/RunTrack-1.0.0.apk | head -3
+```
+```
+package: name='dev.amit.runtrack' versionName='1.0.0'
+uses-permission: name='android.permission.ACCESS_FINE_LOCATION'
+uses-permission: name='android.permission.ACCESS_BACKGROUND_LOCATION'
+```
+
+**Install it:** copy the `.apk` to the phone and open it, or with a USB/adb device:
+
+```bash
+adb install -r dist/RunTrack-1.0.0.apk
+```
+
+> 88 MB ships all three CPU slices. For a ~30 MB build:
+> `./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a`
+
+### Method B — EAS Build (Expo's cloud)
+
+Uses Expo's build machines, so it needs an Expo account (`eas login`).
+
+```bash
+# one-time
+npm install -g eas-cli        # or always use: npx eas-cli …
+eas login                     # or: npx eas-cli login
+eas init                      # link mobile/ to an Expo project
+eas build:configure           # writes mobile/eas.json
+```
+
+**`mobile/eas.json`** — the bit that makes it emit an APK:
+
+```json
+{
+  "cli": { "version": ">= 24.0.0" },
+  "build": {
+    "preview": {
+      "android": { "buildType": "apk" },
+      "distribution": "internal"
+    },
+    "production": {
+      "android": { "buildType": "app-bundle" }
+    }
+  },
+  "submit": { "production": {} }
+}
+```
+
+```bash
+# APK from Expo's cloud  (~10–15 min, runs in your browser)
+npx eas-cli build -p android --profile preview
+
+# APK built on THIS machine instead (no cloud queue)
+npx eas-cli build -p android --profile preview --local
+
+# .aab for the Play Store
+npx eas-cli build -p android --profile production
+
+# upload a finished build to Play
+npx eas-cli submit -p android --latest
+```
+
+| | Method A — local Gradle | Method B — EAS |
+|---|---|---|
+| Expo account | **not needed** | needed (`eas login`) |
+| Where it builds | your laptop | Expo's cloud (`--local` = yours) |
+| First run | ~16 min (Gradle download) | ~10–15 min queue + build |
+| Output | `app-release.apk` | link to `.apk` in the dashboard |
+| Works offline | ✅ | ❌ |
+
+### EAS status on this machine
+
+```bash
+$ which eas                       # not installed globally
+$ npx eas-cli --version
+eas-cli/24.12.0 linux-x64 node-v24.19.0
+
+$ npx eas-cli whoami
+rocks.amit19@gmail.com
+Accounts:
+• amit192400 (Role: Owner)
+• amit192400s-organization (Role: Owner)
+```
+
+So **EAS is ready to use without installing anything** — just prefix with
+`npx eas-cli`. The project is not `eas init`'d yet; run `eas init` inside
+`mobile/` the first time you want a cloud build.
 
 ## 🔐 Roadmap — authentication
 
