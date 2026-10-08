@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "npm --prefix api install",
-  "buildCommand": "npm --prefix api run typecheck",
+  "installCommand": "npm install && npm --prefix server install",
+  "buildCommand": "npm --prefix server run typecheck",
   "rewrites": [
     {
       "source": "/(.*)",

@@ -2,9 +2,12 @@
   "name": "runtrack",
   "private": true,
   "scripts": {
-    "api": "npm --prefix api run dev",
+    "api": "npm --prefix server run dev",
     "mobile": "npm --prefix mobile run start",
-    "install:api": "npm --prefix api install",
+    "install:api": "npm --prefix server install",
     "install:mobile": "npm --prefix mobile install"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
   }
 }

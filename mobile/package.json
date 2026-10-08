@@ -32,11 +32,11 @@
     "web": "expo start --web --port 8083",
     "typecheck": "tsc --noEmit",
     "lint": "expo lint",
-    "test:live": "../api/node_modules/.bin/tsx scripts/live-pipeline.ts",
-    "test:bed": "../api/node_modules/.bin/tsx scripts/bed-replay.ts",
-    "test:scenarios": "../api/node_modules/.bin/tsx scripts/distance-scenarios.ts",
+    "test:live": "../server/node_modules/.bin/tsx scripts/live-pipeline.ts",
+    "test:bed": "../server/node_modules/.bin/tsx scripts/bed-replay.ts",
+    "test:scenarios": "../server/node_modules/.bin/tsx scripts/distance-scenarios.ts",
     "test": "npm run test:scenarios && npm run test:bed && npm run test:walk && npm run test:live",
-    "test:walk": "../api/node_modules/.bin/tsx scripts/walk-vs-run.ts"
+    "test:walk": "../server/node_modules/.bin/tsx scripts/walk-vs-run.ts"
   },
   "private": true
 }

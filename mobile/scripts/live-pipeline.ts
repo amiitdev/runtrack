@@ -3,7 +3,7 @@
  *
  *   GPS fix  →  appendPoint()  →  snapshot  →  mapPoints  →  <Polyline/>
  *
- *   ../api/node_modules/.bin/tsx scripts/live-pipeline.ts     (from mobile/)
+ *   ../server/node_modules/.bin/tsx scripts/live-pipeline.ts     (from mobile/)
  *
  * Proves that every accepted GPS tick grows the polyline, that the camera
  * region tracks the runner, and that noise / pause gaps never leak into the

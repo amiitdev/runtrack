@@ -5,7 +5,7 @@
  *   C. in your pocket while running  (the normal case)
  *   D. hit by a single GPS teleport  (multipath glitch)
  *
- *   ../api/node_modules/.bin/tsx scripts/distance-scenarios.ts
+ *   ../server/node_modules/.bin/tsx scripts/distance-scenarios.ts
  *
  * "truth" = how far the PERSON actually moved. The gap between truth and
  * what the app measured is the phantom distance.

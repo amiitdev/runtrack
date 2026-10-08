@@ -227,7 +227,9 @@ recompute pace after changing your calorie formula.
 ```
 runtrack/
 ├── README.md
-├── api/                          # Node + Express + Drizzle + Neon
+├── api/                          # single Vercel function entry
+│   └── index.ts                   # re-exports the Express app
+├── server/                        # Node + Express + Drizzle + Neon
 │   ├── drizzle/                  # generated SQL migrations (committed)
 │   ├── scripts/                  # seed, smoke, segment tests
 │   └── src/
@@ -267,7 +269,7 @@ CORS_ORIGIN=*
 ### 2 · API
 
 ```bash
-cd api
+cd server
 npm install
 npm run db:generate     # schema.ts  →  drizzle/*.sql
 npm run db:migrate      # apply to Neon (safe to re-run)
@@ -302,9 +304,9 @@ npm start               # Metro on port 8083, scan the QR with Expo Go
 
 | Where | Command | Does |
 |---|---|---|
-| `api` | `npm run dev` | start the API with reload |
-| `api` | `npm run db:migrate` | apply migrations to Neon |
-| `api` | `npm run typecheck` | `tsc --noEmit` |
+| `server` | `npm run dev` | start the API with reload |
+| `server` | `npm run db:migrate` | apply migrations to Neon |
+| `server` | `npm run typecheck` | `tsc --noEmit` |
 | `mobile` | `npm start` | Metro on port **8083** |
 | `mobile` | `npm test` | all four test suites |
 | `mobile` | `npm run typecheck` / `npm run lint` | static checks |
@@ -432,7 +434,7 @@ Plus `api/scripts/smoke.ts` — a full `POST → GET → DELETE` round trip.
 **Static checks**
 
 ```
-$ cd api    && npx tsc --noEmit        → exit 0
+$ cd server && npx tsc --noEmit        → exit 0
 $ cd mobile && npx tsc --noEmit        → exit 0
 $ cd mobile && eslint src --max-warnings=0   → exit 0
 $ npx expo-doctor                      → 21/21 checks passed

@@ -4,7 +4,7 @@
  *   1. walking around the house with the phone in a pocket — counted?
  *   2. running laps around the park — counted?
  *
- *   ../api/node_modules/.bin/tsx scripts/walk-vs-run.ts
+ *   ../server/node_modules/.bin/tsx scripts/walk-vs-run.ts
  *
  * Indoor GPS is modelled the way it really behaves indoors: 12–30 m
  * accuracy and position noise that SWAMPS the 1–2 m you actually moved.

@@ -2,7 +2,7 @@
  * Replays the REAL GPS fixes your phone recorded while sitting on the bed,
  * exported verbatim from Neon `route_points`.
  *
- *   ../api/node_modules/.bin/tsx scripts/bed-replay.ts
+ *   ../server/node_modules/.bin/tsx scripts/bed-replay.ts
  *
  * Before the still-guard: 6.2 m counted, pace/speed kept changing.
  * Expected now:           0 m counted, nothing plotted on the map.
