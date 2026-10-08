@@ -38,8 +38,9 @@
     "test:live": "../server/node_modules/.bin/tsx scripts/live-pipeline.ts",
     "test:bed": "../server/node_modules/.bin/tsx scripts/bed-replay.ts",
     "test:scenarios": "../server/node_modules/.bin/tsx scripts/distance-scenarios.ts",
-    "test": "npm run test:scenarios && npm run test:bed && npm run test:walk && npm run test:live",
-    "test:walk": "../server/node_modules/.bin/tsx scripts/walk-vs-run.ts"
+    "test": "npm run test:scenarios && npm run test:bed && npm run test:walk && npm run test:activity && npm run test:live",
+    "test:walk": "../server/node_modules/.bin/tsx scripts/walk-vs-run.ts",
+    "test:activity": "../server/node_modules/.bin/tsx scripts/activity-test.ts"
   },
   "private": true
 }
