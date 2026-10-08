@@ -46,7 +46,8 @@
           "locationAlwaysAndWhenInUsePermission": "RunTrack keeps tracking your run if you lock the screen or switch apps."
         }
       ],
-      "expo-font"
+      "expo-font",
+      "@maplibre/maplibre-react-native"
     ],
     "experiments": {
       "typedRoutes": true

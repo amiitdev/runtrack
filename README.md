@@ -151,7 +151,7 @@ Only the Live Run screen talks to no one — until you press **STOP**.
 |---|---|---|
 | App shell | **Expo SDK 57** + **Expo Router** | file-based routing, typed routes |
 | Language | **TypeScript** (strict) everywhere | `tsc --noEmit` is green in both projects |
-| Maps | **react-native-maps** | native Google (Android) / Apple (iOS) |
+| Maps | **MapLibre RN** + **OpenFreeMap** | free vector tiles — no API key, no account, no usage cap |
 | Location | **expo-location** | `watchPositionAsync`, `BestForNavigation` |
 | API | **Express 5** | minimal, no framework lock-in |
 | ORM | **Drizzle ORM** | SQL-first, generates real migrations |
@@ -689,17 +689,9 @@ adb install -r dist/RunTrack-1.0.0.apk
 > 88 MB ships all three CPU slices. For a ~30 MB build:
 > `./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a`
 
-### ⚠️ Why the map needs a Google Maps API key
+### 🗺️ Why MapLibre + OpenFreeMap instead of Google Maps
 
-On the **first** build the app closed a couple of seconds after pressing
-START. The manifest told us why:
-
-```
-AndroidManifest.xml        ← no com.google.android.geo.API_KEY meta-data
-app.json                   ← no android.config.googleMaps.apiKey
-```
-
-Timeline of the crash:
+The first build closed a couple of seconds after pressing START:
 
 ```
 tap START
@@ -711,38 +703,48 @@ tap START
    💥 native abort (a Java throw JS cannot catch)  →  app closes
 ```
 
-Expo Go hides this because Expo's own APK ships a key. A standalone build does not.
+The manifest said it plainly — no `com.google.android.geo.API_KEY`, and no
+`android.config.googleMaps.apiKey` in `app.json`. Expo Go hides this because
+Expo's own APK ships a key; a standalone APK does not.
 
-**It is now guarded** — `RouteMap` refuses to mount `MapView` on Android when
-`app.json` has no key, and shows an explanation instead of crashing. Distance,
-pace, GPS and saving all work without a map.
+Instead of making every clone of this repo create a Google Cloud project,
+enable billing and manage a usage cap, the app renders with:
 
-**To get the map back (free):**
+| | |
+|---|---|
+| **Renderer** | [`@maplibre/maplibre-react-native`](https://maplibre.org/maplibre-react-native/) — open-source MapLibre Native |
+| **Tiles** | [OpenFreeMap](https://openfreemap.org) — free vector tiles, **no key, no account, no usage cap** |
+| **Style** | `https://tiles.openfreemap.org/styles/dark` — background `rgb(12,12,12)`, matches the UI |
 
-1. <https://console.cloud.google.com> → new project → **APIs & Services → Library**
-2. enable **Maps SDK for Android**
-3. **Credentials → Create credentials → API key**
-4. put it in `mobile/app.json`:
-
-```jsonc
-"android": {
-  "config": {
-    "googleMaps": { "apiKey": "AIza…your-key…" }
-  }
-}
+```tsx
+<Map mapStyle="https://tiles.openfreemap.org/styles/dark">
+  <Camera bounds={[west, south, east, north]} />
+  <GeoJSONSource id="route" data={lineFeature}>
+    <Layer
+      type="line"
+      layout={{ "line-cap": "round", "line-join": "round" }}
+      paint={{ "line-color": "#22D3EE", "line-width": 5 }}
+    />
+  </GeoJSONSource>
+</Map>
 ```
 
-5. regenerate the native project and rebuild:
+Coordinates are `[longitude, latitude]` in MapLibre — the **reverse** of the
+`{ latitude, longitude }` objects the tracker produces, which is the one
+thing to watch when editing `RouteMap.tsx`.
 
-```bash
-cd mobile
-npx expo prebuild --platform android --no-install   # injects the meta-data
-cd android && ./gradlew assembleRelease
-```
+**Requirements**
 
-Google's free tier is **$200/month of maps credit** (~28 000 loads) — more than
-enough for a personal app. Restrict the key to `dev.amit.runtrack` (Application
-restrictions) so nobody else can spend it.
+- MapLibre RN v11 is **New-Architecture only** (Expo SDK 57 defaults to it ✓)
+- It is **not part of Expo Go** — you need a standalone build, which is
+  exactly what `npx expo prebuild` + `./gradlew assembleRelease` produce
+- Android API ≥ 23
+
+> Prefer Google Maps anyway? Add `android.config.googleMaps.apiKey` to
+> `app.json`, run `npx expo prebuild -p android` and rebuild — but you would
+> be taking on a key, a billing account and a usage cap for no real benefit.
+> The `RouteMap` component would need swapping back; `react-native-maps` was
+> removed from the project.
 
 ### Method B — EAS Build (Expo's cloud)
 

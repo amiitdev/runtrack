@@ -1,8 +1,22 @@
-import { Platform, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, Polyline, type Region } from 'react-native-maps';
-import Constants from 'expo-constants';
+import { StyleSheet, Text, View } from 'react-native';
+import {
+  Camera,
+  GeoJSONSource,
+  Layer,
+  Map,
+  Marker,
+} from '@maplibre/maplibre-react-native';
 import { colors, radius, spacing, type } from '../theme';
-import { darkMapStyle } from '../lib/mapStyle';
+
+/**
+ * OpenFreeMap — free vector tiles, no API key, no usage cap, no account.
+ * The `dark` style matches RunTrack's UI (background rgb(12,12,12)).
+ *
+ * Chosen over Google Maps because a standalone APK has no
+ * `com.google.android.geo.API_KEY`, and the Google Android SDK *aborts the
+ * process* when it cannot find one — a native throw JS cannot catch.
+ */
+const OPENFREE_DARK = 'https://tiles.openfreemap.org/styles/dark';
 
 export interface MapPoint {
   latitude: number;
@@ -11,54 +25,14 @@ export interface MapPoint {
 
 interface Props {
   points: MapPoint[];
-  /** Keep the camera glued to the runner (live run). */
+  /** Keep the camera on the runner (live run). */
   follow?: boolean;
-  /** Draw the 🏁 start and 🏃 current/end markers. */
+  /** Draw 🏁 start / finish markers (saved run). */
   markers?: boolean;
-  /** Fixed height in dp. Defaults to 260. */
+  /** Height in dp. Defaults to 260. Ignored when `fill` is set. */
   height?: number;
   /** Grow to fill the parent instead of using a fixed height. */
   fill?: boolean;
-}
-
-/** Read from app.json so a missing key degrades instead of crashing. */
-const androidMapsKey = String(
-  (Constants.expoConfig as Record<string, any> | null)?.android?.config
-    ?.googleMaps?.apiKey ?? '',
-).trim();
-
-const DEFAULT_REGION: Region = {
-  latitude: 25.5941,
-  longitude: 85.1376,
-  latitudeDelta: 0.02,
-  longitudeDelta: 0.02,
-};
-
-/** Bounding box around the whole route, with a little breathing room. */
-function regionFor(points: MapPoint[]): Region {
-  if (points.length === 0) return DEFAULT_REGION;
-
-  let minLat = points[0].latitude;
-  let maxLat = points[0].latitude;
-  let minLon = points[0].longitude;
-  let maxLon = points[0].longitude;
-
-  for (const p of points) {
-    minLat = Math.min(minLat, p.latitude);
-    maxLat = Math.max(maxLat, p.latitude);
-    minLon = Math.min(minLon, p.longitude);
-    maxLon = Math.max(maxLon, p.longitude);
-  }
-
-  const latDelta = Math.max(0.004, (maxLat - minLat) * 1.6);
-  const lonDelta = Math.max(0.004, (maxLon - minLon) * 1.6);
-
-  return {
-    latitude: (minLat + maxLat) / 2,
-    longitude: (minLon + maxLon) / 2,
-    latitudeDelta: latDelta,
-    longitudeDelta: lonDelta,
-  };
 }
 
 export function RouteMap({
@@ -78,61 +52,83 @@ export function RouteMap({
     );
   }
 
-  // Google's Android SDK aborts the whole process when it cannot find a
-  // `com.google.android.geo.API_KEY` — it is a native throw JS cannot catch.
-  // Expo Go ships its own key, so this only bites in a standalone APK.
-  // iOS uses Apple Maps and never needs one.
-  if (Platform.OS === 'android' && !androidMapsKey) {
-    return (
-      <View style={[styles.placeholder, boxStyle, styles.noKey]}>
-        <Text style={styles.noKeyTitle}>🗺️ Map unavailable</Text>
-        <Text style={styles.noKeyBody}>
-          Google Maps needs an API key in a standalone build.{"\n\n"}
-          1 · create a key in Google Cloud Console (Maps SDK for Android){"\n"}
-          2 · add it to app.json → android.config.googleMaps.apiKey{"\n"}
-          3 · npx expo prebuild -p android && rebuild the APK
-        </Text>
-        <Text style={styles.noKeyHint}>
-          Everything else works — distance, pace and GPS are unaffected.
-        </Text>
-      </View>
-    );
-  }
-
+  const first = points[0];
   const last = points[points.length - 1];
-  const region = follow
-    ? {
-        latitude: last.latitude,
-        longitude: last.longitude,
-        latitudeDelta: 0.006,
-        longitudeDelta: 0.006,
-      }
-    : regionFor(points);
+
+  // MapLibre uses [longitude, latitude] — the opposite order of MapPoint.
+  const coordinates = points.map(
+    (p): [number, number] => [p.longitude, p.latitude],
+  );
+
+  const shape: GeoJSON.Feature =
+    coordinates.length >= 2
+      ? {
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates },
+          properties: {},
+        }
+      : { type: 'Feature', geometry: { type: 'Point', coordinates: coordinates[0] }, properties: {} };
+
+  // Bounding box for the saved-run view, padded so the route is not glued
+  // to the edges.
+  let west = first.longitude;
+  let east = first.longitude;
+  let south = first.latitude;
+  let north = first.latitude;
+  for (const p of points) {
+    west = Math.min(west, p.longitude);
+    east = Math.max(east, p.longitude);
+    south = Math.min(south, p.latitude);
+    north = Math.max(north, p.latitude);
+  }
+  const padLon = Math.max(0.0015, (east - west) * 0.25);
+  const padLat = Math.max(0.0015, (north - south) * 0.25);
 
   return (
     <View style={[styles.wrap, boxStyle]}>
-      <MapView
-        style={StyleSheet.absoluteFill}
-        customMapStyle={darkMapStyle}
-        showsUserLocation={follow}
-        showsMyLocationButton={follow}
-        loadingEnabled
-        {...(follow ? { region } : { initialRegion: region })}
-      >
-        <Polyline
-          coordinates={points}
-          strokeColor={colors.primary}
-          strokeWidth={5}
-          lineCap="round"
-          lineJoin="round"
-        />
+      <Map mapStyle={OPENFREE_DARK} style={StyleSheet.absoluteFill}>
+        {follow ? (
+          <Camera
+            center={[last.longitude, last.latitude]}
+            zoom={16}
+            duration={400}
+          />
+        ) : (
+          <Camera
+            bounds={[west - padLon, south - padLat, east + padLon, north + padLat]}
+            duration={0}
+          />
+        )}
+
+        <GeoJSONSource id="route" data={shape}>
+          <Layer
+            id="route-line"
+            type="line"
+            layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+            paint={{ 'line-color': colors.primary, 'line-width': 5 }}
+          />
+        </GeoJSONSource>
+
         {markers ? (
           <>
-            <Marker coordinate={points[0]} title="Start" pinColor="#22D3EE" />
-            <Marker coordinate={last} title="Finish" pinColor="#A3E635" />
+            <Marker id="start" lngLat={[first.longitude, first.latitude]}>
+              <View style={[styles.dot, { backgroundColor: colors.primary }]} />
+            </Marker>
+            <Marker id="finish" lngLat={[last.longitude, last.latitude]}>
+              <View style={[styles.dot, { backgroundColor: colors.accent }]} />
+            </Marker>
           </>
         ) : null}
-      </MapView>
+
+        {/* In follow mode the last point *is* the runner. */}
+        {follow && !markers ? (
+          <Marker id="runner" lngLat={[last.longitude, last.latitude]}>
+            <View style={styles.runner}>
+              <View style={styles.runnerInner} />
+            </View>
+          </Marker>
+        ) : null}
+      </Map>
     </View>
   );
 }
@@ -156,8 +152,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   placeholderText: { ...type.body, color: colors.textFaint, marginBottom: spacing.xs },
-  noKey: { padding: spacing.lg, gap: spacing.sm },
-  noKeyTitle: { fontSize: 17, fontWeight: '700', color: colors.text },
-  noKeyBody: { fontSize: 12.5, color: colors.textDim, lineHeight: 20 },
-  noKeyHint: { fontSize: 12, color: colors.accent, marginTop: spacing.xs },
+  dot: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#0B1120',
+  },
+  runner: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(34,211,238,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  runnerInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: colors.primary,
+    borderWidth: 2,
+    borderColor: '#0B1120',
+  },
 });
