@@ -451,6 +451,37 @@ $ npx expo export --platform android   → bundles
 | **Vercel (API)** | connect the repo, root directory `api`, production env `DATABASE_URL` |
 | **APK** | `cd mobile && npx expo run:android --variant release` — local Gradle, **no Expo account** |
 
+### Live
+
+| | |
+|---|---|
+| **API** | <https://runtrack-zeta.vercel.app> |
+| **GitHub** | <https://github.com/amiitdev/runtrack> |
+| **Health check** | [`/health`](https://runtrack-zeta.vercel.app/health) |
+
+```bash
+$ curl https://runtrack-zeta.vercel.app/health
+{"ok":true,"service":"runtrack-api","uptimeSeconds":26,"runs":0}
+```
+
+**How the Vercel layout works** — Vercel turns *every* `.ts` file under `/api`
+into its own Lambda, and the Hobby plan caps a deployment at **12 functions**.
+The Express app therefore lives in `/server` and `/api` holds exactly one file:
+
+```
+runtrack/
+├── api/
+│   ├── package.json          # { "type": "module" } — without this Vercel
+│   │                         #   compiles the entry as CJS → ERR_REQUIRE_ESM
+│   └── index.ts              # 1 function: export { default } from '../server/src/app.js'
+├── server/                   # Express + Drizzle + Neon (never deployed directly)
+└── public/index.html         # landing page, satisfies outputDirectory
+```
+
+> After `git push`, the git-linked Vercel project rebuilds automatically.
+> If you deploy to the env-carrying project instead, trigger it with a new
+> `create_deployment` (MCP) or `vercel deploy` from the CLI.
+
 ### Building an APK from the terminal
 
 ```bash
