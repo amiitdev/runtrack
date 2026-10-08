@@ -7,8 +7,7 @@ import { statsRouter } from './routes/stats.js';
 import { profileRouter } from './routes/profile.js';
 import { runsCount } from './routes/runs.js';
 
-const app = express();
-const PORT = Number(process.env.PORT ?? 4000);
+export const app = express();
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '*')
   .split(',')
@@ -51,10 +50,4 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🏃 RunTrack API listening on http://localhost:${PORT}`);
-  console.log(`   health   GET  /health`);
-  console.log(`   runs     POST /runs, GET /runs, GET /runs/:id`);
-  console.log(`   stats    GET  /stats/dashboard | /stats/chart | /stats/records`);
-  console.log(`   profile  GET  /profile, PUT /profile\n`);
-});
+export default app;

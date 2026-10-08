@@ -2,16 +2,16 @@
   "name": "runtrack-api",
   "version": "1.0.0",
   "private": true,
-  "description": "RunTrack REST API — Express + Drizzle ORM + Neon PostgreSQL",
+  "description": "RunTrack REST API \u2014 Express + Drizzle ORM + Neon PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "db:generate": "drizzle-kit generate",
+    "start": "node dist/server.js",
+    "db:generate": "drizzle-kit generate --config=config/drizzle.config.ts",
     "db:migrate": "tsx src/db/migrate.ts",
-    "db:studio": "drizzle-kit studio",
+    "db:studio": "drizzle-kit studio --config=config/drizzle.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
