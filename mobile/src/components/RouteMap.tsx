@@ -1,5 +1,6 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, Polyline, type Region } from 'react-native-maps';
+import Constants from 'expo-constants';
 import { colors, radius, spacing, type } from '../theme';
 import { darkMapStyle } from '../lib/mapStyle';
 
@@ -19,6 +20,12 @@ interface Props {
   /** Grow to fill the parent instead of using a fixed height. */
   fill?: boolean;
 }
+
+/** Read from app.json so a missing key degrades instead of crashing. */
+const androidMapsKey = String(
+  (Constants.expoConfig as Record<string, any> | null)?.android?.config
+    ?.googleMaps?.apiKey ?? '',
+).trim();
 
 const DEFAULT_REGION: Region = {
   latitude: 25.5941,
@@ -67,6 +74,27 @@ export function RouteMap({
     return (
       <View style={[styles.placeholder, boxStyle]}>
         <Text style={styles.placeholderText}>No route yet</Text>
+      </View>
+    );
+  }
+
+  // Google's Android SDK aborts the whole process when it cannot find a
+  // `com.google.android.geo.API_KEY` — it is a native throw JS cannot catch.
+  // Expo Go ships its own key, so this only bites in a standalone APK.
+  // iOS uses Apple Maps and never needs one.
+  if (Platform.OS === 'android' && !androidMapsKey) {
+    return (
+      <View style={[styles.placeholder, boxStyle, styles.noKey]}>
+        <Text style={styles.noKeyTitle}>🗺️ Map unavailable</Text>
+        <Text style={styles.noKeyBody}>
+          Google Maps needs an API key in a standalone build.{"\n\n"}
+          1 · create a key in Google Cloud Console (Maps SDK for Android){"\n"}
+          2 · add it to app.json → android.config.googleMaps.apiKey{"\n"}
+          3 · npx expo prebuild -p android && rebuild the APK
+        </Text>
+        <Text style={styles.noKeyHint}>
+          Everything else works — distance, pace and GPS are unaffected.
+        </Text>
       </View>
     );
   }
@@ -128,4 +156,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   placeholderText: { ...type.body, color: colors.textFaint, marginBottom: spacing.xs },
+  noKey: { padding: spacing.lg, gap: spacing.sm },
+  noKeyTitle: { fontSize: 17, fontWeight: '700', color: colors.text },
+  noKeyBody: { fontSize: 12.5, color: colors.textDim, lineHeight: 20 },
+  noKeyHint: { fontSize: 12, color: colors.accent, marginTop: spacing.xs },
 });

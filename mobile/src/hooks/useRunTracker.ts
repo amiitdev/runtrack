@@ -281,7 +281,14 @@ export function useRunTracker(): RunTracker {
     // Flip to running FIRST so the tap paints immediately; the GPS watch
     // attaches right after without blocking the UI.
     setStatusBoth('running');
-    void startWatch();
+    startWatch().catch((err: unknown) => {
+      // A rejected watch must never become an unhandled rejection — that is
+      // a silent crash on Android release builds.
+      setError(
+        `Could not start GPS tracking: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      setStatusBoth('error');
+    });
   }, [startWatch]);
 
   const pause = useCallback(() => {

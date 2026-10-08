@@ -689,6 +689,61 @@ adb install -r dist/RunTrack-1.0.0.apk
 > 88 MB ships all three CPU slices. For a ~30 MB build:
 > `./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a`
 
+### ⚠️ Why the map needs a Google Maps API key
+
+On the **first** build the app closed a couple of seconds after pressing
+START. The manifest told us why:
+
+```
+AndroidManifest.xml        ← no com.google.android.geo.API_KEY meta-data
+app.json                   ← no android.config.googleMaps.apiKey
+```
+
+Timeline of the crash:
+
+```
+tap START
+   │  points = 0  →  <View> placeholder              ← no crash
+   ▼
+~2–6 s later, first GPS fix
+   │  points = 1  →  <MapView> mounts                ← Google Maps SDK
+   ▼                                                 finds no API key →
+   💥 native abort (a Java throw JS cannot catch)  →  app closes
+```
+
+Expo Go hides this because Expo's own APK ships a key. A standalone build does not.
+
+**It is now guarded** — `RouteMap` refuses to mount `MapView` on Android when
+`app.json` has no key, and shows an explanation instead of crashing. Distance,
+pace, GPS and saving all work without a map.
+
+**To get the map back (free):**
+
+1. <https://console.cloud.google.com> → new project → **APIs & Services → Library**
+2. enable **Maps SDK for Android**
+3. **Credentials → Create credentials → API key**
+4. put it in `mobile/app.json`:
+
+```jsonc
+"android": {
+  "config": {
+    "googleMaps": { "apiKey": "AIza…your-key…" }
+  }
+}
+```
+
+5. regenerate the native project and rebuild:
+
+```bash
+cd mobile
+npx expo prebuild --platform android --no-install   # injects the meta-data
+cd android && ./gradlew assembleRelease
+```
+
+Google's free tier is **$200/month of maps credit** (~28 000 loads) — more than
+enough for a personal app. Restrict the key to `dev.amit.runtrack` (Application
+restrictions) so nobody else can spend it.
+
 ### Method B — EAS Build (Expo's cloud)
 
 Uses Expo's build machines, so it needs an Expo account (`eas login`).
