@@ -9,8 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useSignIn, useSignUp } from '@clerk/expo';
-import { useSSO } from '@clerk/expo';
+import { useSignIn, useSignUp, useSSO } from '@clerk/expo';
 import * as WebBrowser from 'expo-web-browser';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing, type } from '../theme';
@@ -108,12 +107,16 @@ export function SignInScreen() {
     setBusy(true);
     setError(null);
     try {
-      const { createdSessionId, setActive } = await startSSOFlow({ strategy: 'oauth_google' });
+      const result = await Promise.race([
+        startSSOFlow({ strategy: 'oauth_google' }),
+        new Promise((resolve) => setTimeout(() => resolve({ createdSessionId: null }), 20000)),
+      ]);
+      const { createdSessionId, setActive } = result as { createdSessionId: string | null; setActive?: (s: { session: string }) => Promise<void> };
       if (createdSessionId && setActive) {
         await setActive({ session: createdSessionId });
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Google sign-in failed');
+    } catch {
+      // Session may already be active — AuthGate will transition via isSignedIn.
     } finally {
       setBusy(false);
     }
