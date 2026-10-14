@@ -2,7 +2,7 @@
   "expo": {
     "name": "RunTrack",
     "slug": "runtrack",
-    "version": "1.0.0",
+    "version": "1.0.5",
     "scheme": "runtrack",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -20,6 +20,7 @@
     },
     "android": {
       "package": "dev.amit.runtrack",
+      "versionCode": 5,
       "predictiveBackGestureEnabled": false,
       "adaptiveIcon": {
         "backgroundColor": "#0B1120",
@@ -43,6 +44,19 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B1120",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 240,
+          "resizeMode": "contain",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0B1120"
+          }
+        }
+      ],
       [
         "expo-location",
         {
