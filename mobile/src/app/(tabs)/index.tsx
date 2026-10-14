@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Link, useFocusEffect, useRouter } from 'expo-router';
+import { useAuth, useUser } from '@clerk/expo';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { StatCard } from '../../components/StatCard';
@@ -12,6 +13,8 @@ import { formatDuration, formatKm, formatPace, formatSpeed, metersToKm } from '.
 
 export default function Dashboard() {
   const router = useRouter();
+  const { signOut } = useAuth();
+  const { user } = useUser();
   const dashboard = useAsync(() => api.dashboard());
   const chart = useAsync(() => api.chart(7));
 
@@ -40,12 +43,30 @@ export default function Dashboard() {
         day: 'numeric',
       }).format(new Date())}
       action={
-        <Link href="/records" asChild>
-          <Pressable style={styles.streakBtn} hitSlop={8}>
-            <Ionicons name="flame" size={16} color={colors.warning} />
-            <Text style={styles.streakText}>{d?.streakDays ?? 0}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+          <Link href="/records" asChild>
+            <Pressable style={styles.streakBtn} hitSlop={8}>
+              <Ionicons name="flame" size={16} color={colors.warning} />
+              <Text style={styles.streakText}>{d?.streakDays ?? 0}</Text>
+            </Pressable>
+          </Link>
+          <Pressable
+            style={styles.streakBtn}
+            hitSlop={8}
+            onPress={() =>
+              Alert.alert(
+                user?.primaryEmailAddress?.emailAddress ?? 'Account',
+                'Signed in to RunTrack.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Sign out', style: 'destructive', onPress: () => signOut() },
+                ],
+              )
+            }
+          >
+            <Ionicons name="person-circle-outline" size={18} color={colors.textDim} />
           </Pressable>
-        </Link>
+        </View>
       }
     >
       {dashboard.error ? (

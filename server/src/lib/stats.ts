@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { runs, routePoints, runSplits, profile } from '../db/schema.js';
 
@@ -129,15 +129,15 @@ function summarize(rows: (typeof runs.$inferSelect)[]): PeriodStats {
   };
 }
 
-async function runsSince(since: Date) {
+async function runsSince(userId: string, since: Date) {
   return db
     .select()
     .from(runs)
-    .where(and(eq(runs.status, 'completed'), gte(runs.startedAt, since)))
+    .where(and(eq(runs.userId, userId), eq(runs.status, 'completed'), gte(runs.startedAt, since)))
     .orderBy(desc(runs.startedAt));
 }
 
-export async function getDashboard(tz: string): Promise<Dashboard> {
+export async function getDashboard(userId: string, tz: string): Promise<Dashboard> {
   const now = new Date();
   const startToday = startOfLocalDay(now, tz);
   const startWeek = startOfLocalWeek(now, tz);
@@ -145,7 +145,7 @@ export async function getDashboard(tz: string): Promise<Dashboard> {
 
   // One query, three windows. A personal tracker has hundreds of runs,
   // not millions — slicing in JS keeps every timezone rule in one place.
-  const allRows = await runsSince(new Date(0));
+  const allRows = await runsSince(userId, new Date(0));
 
   const todayRows = allRows.filter((r) => r.startedAt >= startToday);
   const weekRows = allRows.filter((r) => r.startedAt >= startWeek);
@@ -203,18 +203,22 @@ function computeStreak(rows: (typeof runs.$inferSelect)[], now: Date, tz: string
 /* History & detail                                                     */
 /* ------------------------------------------------------------------ */
 
-export async function listRuns(limit = 50, offset = 0) {
+export async function listRuns(userId: string, limit = 50, offset = 0) {
   return db
     .select()
     .from(runs)
-    .where(eq(runs.status, 'completed'))
+    .where(and(eq(runs.userId, userId), eq(runs.status, 'completed')))
     .orderBy(desc(runs.startedAt))
     .limit(limit)
     .offset(offset);
 }
 
-export async function getRunDetail(id: string) {
-  const [run] = await db.select().from(runs).where(eq(runs.id, id)).limit(1);
+export async function getRunDetail(userId: string, id: string) {
+  const [run] = await db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.id, id), eq(runs.userId, userId)))
+    .limit(1);
   if (!run) return null;
 
   const [points, splits] = await Promise.all([
@@ -250,7 +254,7 @@ const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
  * Aggregation happens in JS on purpose: all timezone maths then lives in
  * one place (startOfLocalDay) instead of scattered through SQL.
  */
-export async function dailyChart(days: number, tz: string): Promise<ChartBucket[]> {
+export async function dailyChart(userId: string, days: number, tz: string): Promise<ChartBucket[]> {
   const now = new Date();
   const todayStart = startOfLocalDay(now, tz);
   const from = addDays(todayStart, -(days - 1));
@@ -258,7 +262,7 @@ export async function dailyChart(days: number, tz: string): Promise<ChartBucket[
   const rows = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.status, 'completed'), gte(runs.startedAt, from)))
+    .where(and(eq(runs.userId, userId), eq(runs.status, 'completed'), gte(runs.startedAt, from)))
     .orderBy(runs.startedAt);
 
   const buckets = new Map<string, ChartBucket>();
@@ -299,18 +303,25 @@ export interface PersonalRecords {
   totalDistanceMeters: number;
 }
 
-export async function getPersonalRecords(tz: string): Promise<PersonalRecords> {
+export async function getPersonalRecords(userId: string, tz: string): Promise<PersonalRecords> {
   const allRows = await db
     .select()
     .from(runs)
-    .where(eq(runs.status, 'completed'))
+    .where(and(eq(runs.userId, userId), eq(runs.status, 'completed')))
     .orderBy(runs.startedAt);
 
-  // Fastest kilometre = lowest s/km among real full-kilometre splits.
+  // Fastest kilometre = lowest s/km among real full-kilometre splits of
+  // this user's runs (join back to runs to stay scoped).
   const [fastest] = await db
     .select({ pace: runSplits.paceSecPerKm })
     .from(runSplits)
-    .where(sql`duration_seconds > 60 AND distance_meters >= 900`)
+    .innerJoin(runs, eq(runSplits.runId, runs.id))
+    .where(
+      and(
+        eq(runs.userId, userId),
+        sql`run_splits.duration_seconds > 60 AND run_splits.distance_meters >= 900`,
+      ),
+    )
     .orderBy(runSplits.paceSecPerKm)
     .limit(1);
 
@@ -347,9 +358,19 @@ export async function getPersonalRecords(tz: string): Promise<PersonalRecords> {
 /* Profile                                                              */
 /* ------------------------------------------------------------------ */
 
-export async function getProfile() {
-  const [row] = await db.select().from(profile).limit(1);
+/** Per-user profile row; auto-creates the default on first call. */
+export async function getProfile(userId: string) {
+  const [row] = await db.select().from(profile).where(eq(profile.userId, userId)).limit(1);
   if (row) return row;
-  const [created] = await db.insert(profile).values({}).returning();
+  const [created] = await db.insert(profile).values({ userId }).returning();
   return created;
+}
+
+/** Runs not yet linked to any account (pre-auth data awaiting claim). */
+export async function countUnownedRuns(): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(runs)
+    .where(isNull(runs.userId));
+  return row?.count ?? 0;
 }

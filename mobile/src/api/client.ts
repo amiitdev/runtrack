@@ -1,4 +1,5 @@
 import { API_URL, APP_TZ } from '../config';
+import { getAuthToken } from '../lib/apiAuth';
 import type {
   ChartBucket,
   CreateRunPayload,
@@ -54,10 +55,15 @@ async function request<T>(
 
   let res: Response;
   try {
+    const token = await getAuthToken();
     res = await fetch(url, {
       ...init,
       signal: controller.signal,
-      headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {}),
+      },
     });
   } catch (err) {
     const timedOut = err instanceof DOMException && err.name === 'AbortError';
@@ -127,4 +133,12 @@ export const api = {
   updateProfile: (
     patch: Partial<Pick<Profile, 'displayName' | 'weightKg' | 'strideMeters'>>,
   ) => request<Profile>('/profile', { method: 'PUT', body: JSON.stringify(patch) }),
+
+  migrationStatus: () =>
+    request<{ unownedRuns: number; unownedProfile: number }>('/migration/status'),
+
+  claimMigration: () =>
+    request<{ claimedRuns: number; claimedProfile: number }>('/migration/claim', {
+      method: 'POST',
+    }),
 };

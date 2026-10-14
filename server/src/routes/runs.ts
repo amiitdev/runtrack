@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { runs, routePoints, runSplits } from '../db/schema.js';
 import { computeRouteStats, computeSplits, type TrackPoint } from '../lib/geo.js';
@@ -11,6 +11,7 @@ import {
   paceSecPerKm,
 } from '../lib/metrics.js';
 import { getProfile, getRunDetail, listRuns } from '../lib/stats.js';
+import { requireAuth, userId } from '../lib/auth.js';
 
 export const runsRouter = Router();
 
@@ -41,9 +42,10 @@ const createRunSchema = z.object({
  * The phone ships the raw GPS breadcrumb; the server is the single place
  * that derives distance / pace / calories / splits so every client agrees.
  */
-runsRouter.post('/', async (req, res, next) => {
+runsRouter.post('/', requireAuth, async (req, res, next) => {
   try {
     const body = createRunSchema.parse(req.body);
+    const uid = userId(res);
 
     const points: TrackPoint[] = body.points.map((p) => ({
       lat: p.lat,
@@ -58,11 +60,12 @@ runsRouter.post('/', async (req, res, next) => {
     const route = computeRouteStats(points);
     const splits = computeSplits(points);
 
-    const profile = await getProfile();
+    const profile = await getProfile(uid);
     const duration = body.durationSeconds;
     const distance = route.distanceMeters;
 
     const values = {
+      userId: uid,
       status: 'completed' as const,
       startedAt: new Date(body.startedAt),
       endedAt: new Date(body.endedAt),
@@ -124,9 +127,12 @@ runsRouter.post('/', async (req, res, next) => {
  * route_points and run_splits disappear through ON DELETE CASCADE.
  * The profile row is intentionally kept: it is a setting, not history.
  */
-runsRouter.delete('/', async (_req, res, next) => {
+runsRouter.delete('/', requireAuth, async (_req, res, next) => {
   try {
-    const deleted = await db.delete(runs).returning({ id: runs.id });
+    const deleted = await db
+      .delete(runs)
+      .where(eq(runs.userId, userId(res)))
+      .returning({ id: runs.id });
     res.json({ ok: true, deleted: deleted.length });
   } catch (err) {
     next(err);
@@ -134,20 +140,21 @@ runsRouter.delete('/', async (_req, res, next) => {
 });
 
 /** GET /runs?limit=50&offset=0 */
-runsRouter.get('/', async (req, res, next) => {
+runsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const limit = Math.min(Number(req.query.limit ?? 50) || 50, 200);
     const offset = Number(req.query.offset ?? 0) || 0;
-    res.json(await listRuns(limit, offset));
+    res.json(await listRuns(userId(res), limit, offset));
   } catch (err) {
     next(err);
   }
 });
 
 /** GET /runs/:id — run + full GPS route + per-km splits. */
-runsRouter.get('/:id', async (req, res, next) => {
+runsRouter.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const detail = await getRunDetail(req.params.id);
+    const runId = String(req.params.id);
+    const detail = await getRunDetail(userId(res), runId);
     if (!detail) {
       res.status(404).json({ error: 'Run not found' });
       return;
@@ -159,11 +166,11 @@ runsRouter.get('/:id', async (req, res, next) => {
 });
 
 /** DELETE /runs/:id — route_points / run_splits disappear via ON DELETE CASCADE. */
-runsRouter.delete('/:id', async (req, res, next) => {
+runsRouter.delete('/:id', requireAuth, async (req, res, next) => {
   try {
     const [deleted] = await db
       .delete(runs)
-      .where(eq(runs.id, req.params.id))
+      .where(and(eq(runs.id, String(req.params.id)), eq(runs.userId, userId(res))))
       .returning({ id: runs.id });
     if (!deleted) {
       res.status(404).json({ error: 'Run not found' });

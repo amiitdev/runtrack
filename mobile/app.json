@@ -2,7 +2,7 @@
   "expo": {
     "name": "RunTrack",
     "slug": "runtrack",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "scheme": "runtrack",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -20,7 +20,7 @@
     },
     "android": {
       "package": "dev.amit.runtrack",
-      "versionCode": 5,
+      "versionCode": 6,
       "predictiveBackGestureEnabled": false,
       "adaptiveIcon": {
         "backgroundColor": "#0B1120",

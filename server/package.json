@@ -2,7 +2,7 @@
   "name": "runtrack-api",
   "version": "1.0.0",
   "private": true,
-  "description": "RunTrack REST API \u2014 Express + Drizzle ORM + Neon PostgreSQL",
+  "description": "RunTrack REST API — Express + Drizzle ORM + Neon PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@clerk/express": "^2.1.78",
     "@neondatabase/serverless": "^1.1.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",

@@ -22,16 +22,22 @@ import { sql } from 'drizzle-orm';
 export const runStatus = pgEnum('run_status', ['active', 'completed', 'discarded']);
 
 /**
- * Single-row table holding the runner's profile.
- * weight_kg is required to turn distance + time into calories (MET formula).
+ * Per-user profile. weight_kg is required to turn distance + time into
+ * calories (MET formula). user_id is the Clerk user id; NULL means the row
+ * predates auth and is claimable by the first account that signs up.
  */
-export const profile = pgTable('profile', {
-  id: uuid('id').default(sql`gen_random_uuid()`).primaryKey(),
-  displayName: text('display_name').notNull().default('Runner'),
-  weightKg: doublePrecision('weight_kg').notNull().default(70),
-  strideMeters: doublePrecision('stride_meters').notNull().default(0.78),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const profile = pgTable(
+  'profile',
+  {
+    id: uuid('id').default(sql`gen_random_uuid()`).primaryKey(),
+    userId: text('user_id'),
+    displayName: text('display_name').notNull().default('Runner'),
+    weightKg: doublePrecision('weight_kg').notNull().default(70),
+    strideMeters: doublePrecision('stride_meters').notNull().default(0.78),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('profile_user_id_idx').on(t.userId)],
+);
 
 /**
  * One row per finished run. Holds the *aggregated* numbers so the
@@ -41,6 +47,8 @@ export const runs = pgTable(
   'runs',
   {
     id: uuid('id').default(sql`gen_random_uuid()`).primaryKey(),
+    /** Clerk user id. NULL = predates auth, claimable on first sign-up. */
+    userId: text('user_id'),
     status: runStatus('status').notNull().default('completed'),
 
     startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
@@ -65,6 +73,7 @@ export const runs = pgTable(
   (t) => [
     index('runs_started_at_idx').on(t.startedAt),
     index('runs_status_idx').on(t.status),
+    index('runs_user_id_idx').on(t.userId),
   ],
 );
 
@@ -135,6 +144,7 @@ export const runSplits = pgTable(
  */
 export const goals = pgTable('goals', {
   id: uuid('id').default(sql`gen_random_uuid()`).primaryKey(),
+  userId: text('user_id'),
   /** Calendar day this goal applies to (date, not timestamp). */
   day: date('day').notNull(),
   targetKm: doublePrecision('target_km').notNull().default(5),

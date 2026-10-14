@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { profile } from '../db/schema.js';
 import { getProfile } from '../lib/stats.js';
+import { requireAuth, userId } from '../lib/auth.js';
 
 export const profileRouter = Router();
 
@@ -13,20 +14,20 @@ const updateSchema = z.object({
   strideMeters: z.number().min(0.4).max(1.5).optional(),
 });
 
-/** GET /profile — creates the default row on first call. */
-profileRouter.get('/', async (_req, res, next) => {
+/** GET /profile — creates the user's default row on first call. */
+profileRouter.get('/', requireAuth, async (_req, res, next) => {
   try {
-    res.json(await getProfile());
+    res.json(await getProfile(userId(res)));
   } catch (err) {
     next(err);
   }
 });
 
 /** PUT /profile */
-profileRouter.put('/', async (req, res, next) => {
+profileRouter.put('/', requireAuth, async (req, res, next) => {
   try {
     const patch = updateSchema.parse(req.body);
-    const existing = await getProfile();
+    const existing = await getProfile(userId(res));
     const [updated] = await db
       .update(profile)
       .set(patch)
