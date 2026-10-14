@@ -651,13 +651,35 @@ vercel --prod                     # deploy to production
 Project → **Settings → Environment Variables** → add both, targets
 **Production** + **Preview**:
 
-| Key | Value |
-|---|---|
-| `DATABASE_URL` | your Neon connection string |
-| `CORS_ORIGIN` | `*` |
+| Key | Type | Value |
+|---|---|---|
+| `DATABASE_URL` | sensitive | your Neon connection string |
+| `CORS_ORIGIN` | plain | `*` |
+| `CLERK_SECRET_KEY` | encrypted | from the Clerk dashboard → API Keys |
+| `CLERK_PUBLISHABLE_KEY` | plain | same page (`pk_test_…`) |
 
 Then redeploy. Without `DATABASE_URL` the function throws at import time,
 because `server/src/db/client.ts` refuses to start with no connection string.
+Without `CLERK_SECRET_KEY`, `clerkMiddleware()` cannot verify session tokens
+and every authenticated route returns **401** — which is the correct
+behaviour, not a bug.
+
+### The final layout — one project
+
+```
+github.com/amiitdev/runtrack  ──push──►  Vercel project "runtrack-live"
+                                              │
+                                              ├─ git-linked (auto-deploys)
+                                              ├─ all four env vars
+                                              └─ ✅ 200 /health · 401 /runs
+                                                     ▲
+        mobile/.env  EXPO_PUBLIC_API_URL  ───────────┘
+```
+
+Earlier there were three projects (`runtrack`, `runtrack-api`, `runtrack-live`)
+and the GitHub link sat on the broken one. Vercel's connect-repo **reuses
+whichever project already owns the link**, so the only way to move it is to
+delete that project first — which is what was done.
 
 ### Step 5 — verify
 
