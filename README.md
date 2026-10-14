@@ -557,7 +557,7 @@ cd server
 npx tsx scripts/seed.ts                 # 18 demo runs through the real POST /runs
 
 # wipe all history (profile is kept)
-curl -X DELETE https://runtrack-zeta.vercel.app/runs
+curl -X DELETE https://runtrack-live-amit-kumars-projects-8bcd1587.vercel.app/runs
 ```
 
 ### Test scripts (`cd server`)
@@ -662,10 +662,10 @@ because `server/src/db/client.ts` refuses to start with no connection string.
 ### Step 5 — verify
 
 ```bash
-$ curl https://runtrack-zeta.vercel.app/health
+$ curl https://runtrack-live-amit-kumars-projects-8bcd1587.vercel.app/health
 {"ok":true,"service":"runtrack-api","uptimeSeconds":26,"runs":0}
 
-$ curl https://runtrack-zeta.vercel.app/stats/dashboard?tz=Asia/Kolkata
+$ curl https://runtrack-live-amit-kumars-projects-8bcd1587.vercel.app/stats/dashboard?tz=Asia/Kolkata
 {"today":{"distanceMeters":0,...},"streakDays":0,"totalRuns":0}
 ```
 
