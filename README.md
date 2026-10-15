@@ -24,7 +24,7 @@ save → history, charts, streaks and personal records.*
 - [How it works](#-how-it-works)
 - [Tech stack](#-tech-stack)
 - [Architecture](#-architecture)
-- [Repository layout](#-repository-layout)
+- [Repository layout](#repository-layout)
 - [Getting started](#-getting-started)
 - [The six things that make it correct](#-the-six-things-that-make-it-correct)
 - [API reference](#-api-reference)
@@ -32,7 +32,15 @@ save → history, charts, streaks and personal records.*
 - [Command reference](#-command-reference)
 - [Deploy to Vercel](#-deploy-to-vercel)
 - [Build the APK](#-build-the-apk)
-- [Roadmap — authentication](#-roadmap--authentication)
+- [Authentication — how it works](#-authentication--how-it-works)
+  - [The one idea that makes it work](#-the-one-idea-that-makes-it-work)
+  - [The request lifecycle](#-the-request-lifecycle)
+  - [What changed, file by file](#-what-changed-file-by-file)
+  - [The database change](#-the-database-change)
+  - [First sign-in claims your history](#-first-sign-in-claims-your-history)
+  - [The two bugs that cost real time](#-the-two-bugs-that-cost-real-time)
+  - [Verified live](#-verified-live)
+  - [APK releases](#-apk-releases)
 - [Roadmap — beyond that](#-roadmap--beyond-that)
 
 ---
@@ -195,29 +203,35 @@ Only the Live Run screen talks to no one — until you press **STOP**.
 ### Data model
 
 ```
-profile                      runs                        route_points
-┌──────────────────┐        ┌───────────────────┐        ┌───────────────────┐
-│ id            uuid│        │ id             uuid│        │ id          bigserial
-│ display_name  text│        │ status   run_status│   ┌───►│ run_id        uuid│ ─┐
-│ weight_kg  float8  │        │ started_at  timestamptz    │ seq           int  │ │
-│ stride_meters fl8  │        │ ended_at    timestamptz    │ segment        int  │ │
-│ created_at     tz  │        │ duration_s    int  ◄─ moving time        │ │
-└──────────────────┘        │ distance_m  float8  │      │ latitude     float8  │ │
-        │                   │ avg_speed   float8  │      │ longitude    float8  │ │
-        │                   │ max_speed   float8  │      │ altitude     float8  │ │
-        │ used for          │ avg_pace_s    int    │      │ speed        float8  │ │
-        └── calories         │ calories    float8  │      │ accuracy     float8  │ │
-                             │ elev_gain   float8  │      │ recorded_at    tz    │ │
-                             │ steps          int  │      └───────────────────┘   │
-                             │ note          text  │          ON DELETE CASCADE ◄─┘
-                             └─────────┬───────────┘
-                                       │ 1:n
-                             ┌─────────▼───────────┐
-                             │     run_splits      │
-                             │ run_id / index      │  1-based km number
-                             │ distance / duration │
-                             │ pace / elevation    │
-                             └─────────────────────┘
+profile                    runs                       route_points
+┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
+│ id            uuid │     │ id            uuid  │     │ id          bigserial
+│ user_id       text │     │ user_id       text  │     │ run_id        uuid │ ─┐
+│ display_name  text │     │ status  run_status  │ ┌──►│ seq           int  │ │
+│ weight_kg  float8  │     │ started_at timestamptz   │ segment       int  │ │
+│ stride_meters fl8  │     │ ended_at   timestamptz   │ latitude   float8  │ │
+│ created_at     tz  │     │ duration_s     int  │◄─ moving time        │ │
+└───────┬────────────┘     │ distance_m  float8  │     │ longitude  float8  │ │
+        │                  │ avg_speed   float8  │     │ altitude   float8  │ │
+        │                  │ max_speed   float8  │     │ speed      float8  │ │
+        │                  │ avg_pace_s     int  │     │ accuracy   float8  │ │
+        │                  │ calories    float8  │     │ recorded_at    tz  │ │
+        │                  │ elev_gain   float8  │     └───────┬────────────┘
+        │                  │ steps           int  │             │ ON DELETE CASCADE
+        │                  │ note           text  │             │
+        │ used for         └───────┬──────────────┘             │
+        └── calories               │ 1:n                        │
+                          ┌────────▼─────────────┐             │
+                          │     run_splits      │◄────────────┘
+                          │ run_id / index      │   1-based km number
+                          │ distance / duration │
+                          │ pace / elevation    │
+                          └─────────────────────┘
+
+        ┌──────────────────────────────────────────────────────┐
+        │ user_id (text) on runs / profile / goals             │
+        │ NULL = written before auth existed → claimable once  │
+        └──────────────────────────────────────────────────────┘
 ```
 
 **The important design decision:** store the raw GPS breadcrumb, *then* derive
@@ -906,92 +920,378 @@ So **EAS is ready to use without installing anything** — just prefix with
 `npx eas-cli`. The project is not `eas init`'d yet; run `eas init` inside
 `mobile/` the first time you want a cloud build.
 
-## 🔐 Roadmap — authentication
+## 🔐 Authentication — how it works
 
-The current build is **single-user**: every run lands in one bucket. Here is the
-plan for `login / signup / logout` so each account sees only its own data.
+Sign in with Google. Your runs become yours. Nobody else can read them.
 
-### Database changes
+This section is the long version: the architecture, every file that changed,
+why Clerk and Neon never touch each other, and the two bugs that ate an
+afternoon.
 
-```sql
-create table users (
-  id            uuid primary key default gen_random_uuid(),
-  email         text unique not null,
-  password_hash text not null,              -- argon2id, never bcrypt in new code
-  display_name  text,
-  created_at    timestamptz not null default now()
-);
+---
 
--- every run now belongs to somebody
-alter table runs add column user_id uuid not null references users(id) on delete cascade;
-create index runs_user_started_idx on runs (user_id, started_at desc);
-```
+### 🔑 The one idea that makes it work
 
-`profile` also gains `user_id` (one row per user: weight → calories).
-
-### API changes
+**Clerk owns identity. Neon owns data. They are joined by exactly one string.**
 
 ```
-POST /auth/signup   { email, password, displayName }
-POST /auth/login    { email, password }         → { token, user }
-POST /auth/logout                                 → client discards the token
-GET  /auth/me                                       → current user
-
-+ every /runs and /stats route gains middleware:
-
-   Authorization: Bearer <jwt>
-        │
-        ▼
-   verifyToken()  ──► req.userId  ──►  WHERE runs.user_id = $userId
+┌─────────────────────┐                      ┌──────────────────────────┐
+│      Clerk          │                      │     Neon Postgres        │
+│  (authentication)   │                      │      (your data)         │
+├─────────────────────┤                      ├──────────────────────────┤
+│ user_2f8K…9x        │ ──── user_id ──────► │ runs.user_id             │
+│ amit@gmail.com      │       (the only      │ profile.user_id          │
+│ Google OAuth        │        shared field) │ goals.user_id            │
+│ session tokens      │                      │                          │
+│ password / email    │  ◄── never sent ───  │  ← Clerk never sees a    │
+│ profile photo       │                      │     single GPS point     │
+└─────────────────────┘                      └──────────────────────────┘
 ```
 
-Row-scoping is **one extra WHERE clause**, which is why `user_id` belongs on
-`runs` and not in a join table:
+Clerk never receives your runs. Neon never receives your password. The only
+thing that crosses the boundary is `user_2f8K…9x` — an opaque string Clerk
+hands you and Postgres stores in a `text` column.
+
+That separation is why this is safe *and* why it was cheap to build: the API
+needed **one extra `WHERE` clause**, not a user table, a password hasher, a
+token signer, or a session store.
+
+#### Why Clerk and not the self-hosted plan the roadmap described
+
+The original plan was argon2 + a hand-rolled JWT. Clerk was chosen instead:
+
+| | Self-hosted JWT | Clerk (what shipped) |
+|---|---|---|
+| Passwords | you hash, store, reset, rate-limit | Clerk |
+| Google OAuth | you build the whole redirect dance | one call: `startSSOFlow` |
+| Session refresh | you implement refresh tokens | Clerk |
+| Sign-in UI | you build and polish it | prebuilt + themed |
+| Token verification | you verify a JWT signature | `clerkMiddleware()` |
+| Your attack surface | passwords, tokens, OAuth bugs | a verified session token |
+
+You still wrote the interesting part — **row-level scoping** — which is the
+part that actually protects the data.
+
+---
+
+### 🔁 The request lifecycle
+
+Trace one authenticated call end to end.
+
+```
+  PHONE (Expo)                    NEON (Postgres)
+  ────────────                    ────────────────
+  1. Sign in with Google
+         │
+         ▼
+     Clerk SDK  ────────────►  Google OAuth
+         │
+         │  returns a session token (a short-lived JWT,
+         │  signed by Clerk, containing sub=user_2f8K…9x)
+         ▼
+  2. cached in expo-secure-store   ← Keychain / Keystore, not AsyncStorage
+         │
+         ▼
+  3. every fetch() in api/client.ts
+         │
+         │   Authorization: Bearer <session token>
+         │   Content-Type: application/json
+         ▼
+  ──────────────────────────────────────────────────────────
+  4. Vercel:  clerkMiddleware()
+                │  fetches Clerk's JWKS, verifies the signature,
+                │  checks expiry, attaches the result to the request
+                ▼
+              requireAuth()
+                │  getAuth(req).userId  ──►  'user_2f8K…9x'
+                │  no userId  ──►  401 {"error":"Unauthorized"}
+                ▼
+  5. route handler
+                │
+                │   db.select().from(runs)
+                │     .where(eq(runs.userId, 'user_2f8K…9x'))
+                ▼
+  6. Neon returns ONLY that user's rows
+```
+
+**Three layers, three jobs:**
+
+| Layer | Code | Job |
+|---|---|---|
+| Client | `@clerk/expo` | get a session token, keep it fresh |
+| Server | `@clerk/express` | verify that token is real and not expired |
+| Database | `runs.user_id` | make sure one user's rows can't reach another |
+
+Nothing in layer 1 is trusted. A token you can *present* is not a token you
+can *forge* — layer 2 proves it against Clerk's public keys before layer 3
+ever runs a query.
+
+---
+
+### 🧱 What changed, file by file
+
+Every file touched while adding auth, in the order it matters.
+
+#### Mobile
+
+| File | What | Why |
+|---|---|---|
+| `mobile/package.json` | `+ @clerk/expo` | the client SDK |
+| `mobile/.env` | `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`<br>`EXPO_PUBLIC_API_URL` | **inlined at build time** — see the bugs section |
+| `mobile/src/lib/clerk.ts` | publishable key + `tokenCache` | throws at boot if the key is missing, so a bad build fails loudly instead of silently 401-ing |
+| `mobile/src/lib/apiAuth.ts` | `registerTokenGetter()` / `getAuthToken()` | a plain module cannot call a React hook, so the root layout registers Clerk's `getToken` once and the API client calls it |
+| `mobile/src/app/_layout.tsx` | `<ClerkProvider>` + `<AuthGate>` | wraps the tree; the gate renders the app, the sign-in screen, or a spinner — exactly one of the three |
+| `mobile/src/components/SignInScreen.tsx` | **Continue with Google** | `startSSOFlow({ strategy: 'oauth_google' })` |
+| `mobile/src/app/sso-callback.tsx` | deep-link landing | where Chrome sends you back (`runtrack://`) |
+| `mobile/src/components/MigrationPrompt.tsx` | one-shot claim sheet | appears once, after the first sign-in |
+| `mobile/src/api/client.ts` | attach `Authorization` | **one place, every request** — no chance of a route forgetting it |
+
+#### Server
+
+| File | What | Why |
+|---|---|---|
+| `server/package.json` | `+ @clerk/express` | |
+| `server/src/app.ts` | `app.use(clerkMiddleware())` | mounts verification globally — a route cannot accidentally skip it |
+| `server/src/lib/auth.ts` | `requireAuth` + `userId(res)` | the 401 gate and the typed accessor |
+| `server/src/routes/migration.ts` | `GET /status`, `POST /claim` | the first-sign-in migration |
+| `server/src/db/schema.ts` | `userId` on `runs`, `profile`, `goals` | nullable, with indexes |
+| every `routes/*.ts` | `.where(eq(runs.userId, …))` | the actual isolation |
+
+#### The two functions that carry the whole system
 
 ```ts
-// today
-db.select().from(runs).where(eq(runs.status, 'completed'));
-
-// after auth
-db.select().from(runs)
-  .where(and(eq(runs.userId, req.userId), eq(runs.status, 'completed')));
+// server/src/lib/auth.ts — 401 unless clerkMiddleware verified a session
+export const requireAuth: RequestHandler = (req, res, next) => {
+  const userId = getAuth(req).userId;
+  if (!userId) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  res.locals.userId = userId;
+  next();
+};
 ```
 
-### Mobile changes
-
-```
-mobile/src/
-├── context/AuthContext.tsx     # user, token, signIn, signUp, signOut
-├── lib/storage.ts              # expo-secure-store for the JWT (never AsyncStorage)
-├── api/client.ts               # + Authorization header on every request
-└── app/
-    ├── (auth)/sign-in.tsx
-    ├── (auth)/sign-up.tsx
-    └── (tabs)/_layout.tsx      # redirect to (auth) when token missing
+```ts
+// mobile/src/lib/apiAuth.ts — how a plain module gets the token
+let getTokenFn: (() => Promise<string | null>) | null = null;
+export function registerTokenGetter(fn: () => Promise<string | null>) {
+  getTokenFn = fn;                       // called once by _layout.tsx
+}
+export async function getAuthToken(): Promise<string | null> {
+  return getTokenFn ? await getTokenFn() : null;
+}
 ```
 
-- Store the JWT in **`expo-secure-store`** (Keychain / Keystore), not `AsyncStorage`.
-- Attach `Authorization` in `api/client.ts` — one place, every request.
-- `expo-router` guards: a root `useEffect` redirects to `/sign-in` when
-  `user === null`, so deep links cannot skip the gate.
-- **Logout** = delete the token from SecureStore + clear the context. The server
-  keeps stateless JWTs; if you later need instant revocation, add a `revoked_at`
-  column or switch to short-lived access + refresh tokens.
+And the single line in `api/client.ts` that makes every route protected:
 
-### Recommended services
+```ts
+const token = await getAuthToken();
+res = await fetch(url, {
+  ...init,
+  headers: {
+    'content-type': 'application/json',
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  },
+});
+```
 
-| Approach | Best for |
-|---|---|
-| **Self-hosted (JWT + argon2)** | full control, matches this codebase, no vendor |
-| **Clerk / Auth.js** | minutes instead of days, managed UI, OAuth out of the box |
-| **Supabase Auth** | if you ever move off Neon to Supabase |
+---
 
-### Multi-user extras that fall out of this
+### 🗄️ The database change
 
-- `DELETE /runs` only ever touches `req.userId`'s rows
-- stats/records queries all gain the same `user_id` predicate
-- add Neon **Row Level Security** as a second line of defence
-- cloud sync across devices, leaderboards, friends — all become joins on `user_id`
+```sql
+-- nullable on purpose. More on that below.
+alter table runs    add column user_id text;
+alter table profile add column user_id text;
+
+create index runs_user_id_idx    on runs    (user_id);
+create unique index profile_user_id_idx on profile (user_id);
+```
+
+**`text`, not `uuid` and not a foreign key.** Clerk's user id is an opaque
+string (`user_2f8K…9x`). It is not a UUID, it is not something Postgres can
+validate, and there is no `users` table for a FK to point at. Storing it as
+`text` is the honest choice — and it means Clerk owns the identity lifecycle
+entirely.
+
+**`nullable`.** Every column had to allow `NULL`, and that is deliberate:
+the database already held runs that were written *before* auth existed.
+Making the column `NOT NULL` would have forced a decision about those rows
+the moment the migration ran. Making it nullable meant the migration was
+instant and harmless.
+
+---
+
+### 🧾 First sign-in claims your history
+
+This is the bit that keeps your existing data alive.
+
+Before auth, runs landed in one bucket with no owner — `user_id = NULL`.
+The rule: **never delete a run.** Instead, the first account to sign in is
+offered them.
+
+```
+   first sign-in
+        │
+        ▼
+  GET /migration/status          ← app asks "anything unowned?"
+        │
+        ├─ unownedRuns: 0  ──►  prompt never appears. You start empty.
+        │
+        └─ unownedRuns: 6  ──►  MigrationPrompt appears:
+                                 "We found 6 runs saved before you signed in.
+                                  Link them to your account?"
+                                      │
+                     ┌────────────────┴────────────────┐
+                   Yes                               No later
+                     │                                   │
+        POST /migration/claim                 rows stay NULL forever
+                     │                          (invisible to everyone)
+        UPDATE runs SET user_id = 'user_2f8K…9x'
+               WHERE user_id IS NULL
+                     │
+                     └──► 6 runs, 21.85 km, 3876 route points — yours.
+                          Idempotent: a second call claims 0.
+```
+
+The endpoint, and why it is an `UPDATE` and not a `DELETE`:
+
+```ts
+// server/src/routes/migration.ts
+const claimedRuns = await db
+  .update(runs)
+  .set({ userId: uid })
+  .where(isNull(runs.userId))          // ← every unowned row, once
+  .returning({ id: runs.id });
+
+res.json({ claimedRuns: claimedRuns.length, claimedProfile });
+```
+
+The `profile` row gets slightly gentler handling, because the sign-up flow
+auto-creates a default one (weight 70 kg, stride 0.78 m). If you already
+have a row, the *legacy* row's settings are copied over it rather than
+creating a second row you'd never see.
+
+**Later sign-ups get nothing.** If a second account signs in, the prompt
+does not appear — those rows are already owned. They see an empty history,
+which is correct.
+
+---
+
+### 🐛 The two bugs that cost real time
+
+#### 1 · Google sign-in spun forever
+
+The deep-link landing screen rendered an `ActivityIndicator` **unconditionally**:
+
+```tsx
+// before — broken
+export default function SSOCallback() {
+  return (
+    <View style={styles.root}>
+      <ActivityIndicator size="large" color={colors.primary} />
+    </View>
+  );
+}
+```
+
+When Android kills your process while you are in Chrome — which happens
+constantly, and is not a bug in your code — the redirect arrives back with
+**no session**. The spinner had no exit condition, so the app hung on it
+forever with no way out short of force-stopping it.
+
+```tsx
+// after — fixed
+const { isLoaded } = useAuth();
+if (!isLoaded) return <FullScreenSpinner />;
+return <Redirect href="/" />;   // AuthGate then shows app OR sign-in
+```
+
+There is no third state. Once Clerk has loaded, bouncing to `/` is always
+correct: either you have a session and the app renders, or you don't and the
+sign-in screen does.
+
+#### 2 · `EXPO_PUBLIC_*` is baked in at build time
+
+```js
+// mobile/.env
+EXPO_PUBLIC_API_URL=https://runtrack-live-….vercel.app
+EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_…
+```
+
+These look like environment variables. They are not. Metro **inlines them
+into the JS bundle** when it compiles, so the string is sitting inside
+`index.android.bundle` inside the APK. Changing them on the server, or on
+the phone, or in Vercel — does nothing.
+
+```
+  .env  ──Metro──►  string literal in the bundle  ──►  APK
+                          ▲
+                          └── to change the URL you must REBUILD the APK
+```
+
+Which is why every URL change is followed by a rebuild, and why shipping
+`CLERK_SECRET_KEY` in the app would be catastrophic — and is impossible,
+because only `EXPO_PUBLIC_`-prefixed values are inlined, and the secret key
+has no such prefix.
+
+---
+
+### ✅ Verified live
+
+Real output against the deployed API:
+
+```bash
+$ curl https://runtrack-live-amit-kumars-projects-8bcd1587.vercel.app/health
+{"ok":true,"service":"runtrack-api","uptimeSeconds":106,"runs":6}   # 200 · public
+
+$ curl https://runtrack-live-amit-kumars-projects-8bcd1587.vercel.app/runs
+{"error":"Unauthorized"}                                             # 401 · as designed
+
+$ curl https://runtrack-live-…/migration/status
+{"error":"Unauthorized"}                                             # 401 · as designed
+```
+
+And the database, read directly from Neon:
+
+```
+runs.user_id column : present (nullable=YES)
+runs                : 6 total, 6 owned, 0 unowned (legacy)
+distance on file    : 21.85 km over 6 runs since 2026-10-09
+route_points        : 3876
+profile             : 1 rows, 1 owned
+```
+
+`6 owned, 0 unowned` — the claim already ran. Every one of the original runs
+now belongs to the account, and no row was deleted to get there.
+
+---
+
+### 📦 APK releases
+
+All builds live on the GitHub Releases page. Grab the latest:
+
+**→ [github.com/amiitdev/runtrack/releases](https://github.com/amiitdev/runtrack/releases)**
+
+| Release | versionName | versionCode | Size | What's in it |
+|---|---|---|---|---|
+| **[v1.1.0](https://github.com/amiitdev/runtrack/releases/tag/v1.1.0)** · Latest | **1.1.0** | **7** | 53 MB | Auth + the infinite-spinner fix + correct API URL |
+| [v1.0.6](https://github.com/amiitdev/runtrack/releases/tag/v1.0.6) | 1.0.6 | 6 | 53 MB | Clerk auth lands — per-user isolation, first-sign-in claim |
+| [v1.0.5](https://github.com/amiitdev/runtrack/releases/tag/v1.0.5) | 1.0.5 | 5 | 51 MB | Brand refresh, icon, animated splash. No auth. |
+| [v1.0.4](https://github.com/amiitdev/runtrack/releases/tag/v1.0.4) | 1.0.4 | 4 | — | MapLibre + OpenFreeMap, background GPS |
+
+```bash
+# install the latest
+adb install -r RunTrack-1.1.0.apk
+```
+
+**Why every APK is ~51–53 MB.** The build bundles only `arm64-v8a`. MapLibre
+ships one native `.so` per ABI — bundling all four pushes the APK past
+200 MB for no benefit on a modern phone.
+
+> **v1.0.6 caveat:** that build still contains the infinite-spinner bug on
+> the Google redirect screen. Upgrade to v1.1.0 if Google sign-in hangs.
 
 ---
 
@@ -1002,7 +1302,6 @@ mobile/src/
 - 🔊 voice announcements — *"You've completed 2 kilometres"*
 - 🎯 distance / time goals with a progress ring
 - ⚡ pace alerts (slow down / speed up)
-- 📍 background tracking (`expo-task-manager` + `expo-background-location`)
 - 🌄 elevation graph per run
 - 🗺️ route replay — animate the marker along the polyline
 - 👟 shoe mileage tracking
@@ -1029,6 +1328,9 @@ mobile/src/
 | Empirical testing | 4 suites replaying real GPS, incl. your own |
 | Mobile UX | dark theme, typed routes, permission flows, maps |
 | Engineering hygiene | strict TS, 0-warning ESLint, expo-doctor, exports |
+| Auth architecture | Clerk session → `requireAuth` → `WHERE runs.user_id = $1` |
+| Zero-downtime migration | nullable `user_id`, first sign-in claims legacy rows |
+| OAuth deep links | `runtrack://` scheme, `sso-callback` route, process-death recovery |
 
 ---
 
